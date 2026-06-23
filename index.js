@@ -1,14 +1,14 @@
-/*** 카카오 + 슬랙 + 구글챗 겸용 비서 서버 (Express on Render) **************
+/*** 카카오 + 슬랙 + 구글챗 겸용 비서 서버 (Claude 버전, Express on Render) ***
  * /skill  → 카카오 (콜백: 즉시 ACK 후 callbackUrl로 최종 응답)
  * /slack  → 슬랙 슬래시 명령 (즉시 ACK 후 response_url로 최종 응답)
  * /gchat  → 구글 챗 (응답 제한 30초라 동기 응답)
  *
  * 두뇌: parseIntent(의도+날짜+잡담분류) → fetchGas / chat → summarize
- * Render 환경변수: GAS_URL, GAS_TOKEN, GEMINI_API_KEY, GEMINI_MODEL
+ * Render 환경변수: GAS_URL, GAS_TOKEN, ANTHROPIC_API_KEY, (선택) CLAUDE_MODEL
  *********************************************************************/
 import express from 'express';
 import axios from 'axios';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import Anthropic from '@anthropic-ai/sdk';
 
 const app = express();
 app.use(express.json());
@@ -16,31 +16,18 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({
-  model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-});
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
-/* ===== AI 호출 (여기 한 곳만 바꾸면 모델 교체 가능) ===== */
+/* ===== AI 호출 (모델 교체는 여기 한 곳만) ===== */
 async function askAI(prompt) {
-  const r = await model.generateContent(prompt);
-  return r.response.text();
+  const r = await anthropic.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: prompt }],
+  });
+  return r.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
 }
-/* ── (선택) 클로드로 바꾸려면 위 askAI를 지우고 아래를 사용:
- *   1) npm i @anthropic-ai/sdk
- *   2) Render 환경변수에 ANTHROPIC_API_KEY 추가
- *   3) 파일 맨 위에  import Anthropic from '@anthropic-ai/sdk';
- *
- * const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
- * async function askAI(prompt) {
- *   const r = await anthropic.messages.create({
- *     model: 'claude-sonnet-4-6',
- *     max_tokens: 1024,
- *     messages: [{ role: 'user', content: prompt }],
- *   });
- *   return r.content.filter(b => b.type === 'text').map(b => b.text).join('');
- * }
- */
 
 app.get('/', (_req, res) => res.send('skill server ok'));
 
@@ -52,8 +39,8 @@ app.post('/skill', (req, res) => {
   if (!ur.callbackUrl) return;
   handleAsync(ur.utterance || '')
     .then((t) => sendKakao(ur.callbackUrl, t))
-    .catch(async (e) => { console.error('[kakao]', e?.message||e);
-      await sendKakao(ur.callbackUrl, '⚠️ 처리 중 오류가 났어요.').catch(()=>{}); });
+    .catch(async (e) => { console.error('[kakao]', e?.message || e);
+      await sendKakao(ur.callbackUrl, '⚠️ 처리 중 오류가 났어요.').catch(() => {}); });
 });
 
 /* ===== 슬랙 ===== */
@@ -64,8 +51,8 @@ app.post('/slack', (req, res) => {
   if (!responseUrl) return;
   handleAsync(text)
     .then((t) => postSlack(responseUrl, t))
-    .catch(async (e) => { console.error('[slack]', e?.message||e);
-      await postSlack(responseUrl, '⚠️ 처리 중 오류가 났어요.').catch(()=>{}); });
+    .catch(async (e) => { console.error('[slack]', e?.message || e);
+      await postSlack(responseUrl, '⚠️ 처리 중 오류가 났어요.').catch(() => {}); });
 });
 
 /* ===== 구글 챗 (동기 응답, 30초 제한 내) ===== */
@@ -74,7 +61,7 @@ app.post('/gchat', async (req, res) => {
   if (event.type !== 'MESSAGE') {
     return res.json({ text: '안녕하세요! 일정·메일·드라이브·시트를 봐드릴게요. 무엇을 도와드릴까요?' });
   }
-  const text = (event.message?.text || '').replace(/^@\S+\s*/, ''); // 멘션 제거
+  const text = (event.message?.text || '').replace(/^@\S+\s*/, '');
   try {
     res.json({ text: await handleAsync(text) });
   } catch (e) {
@@ -86,7 +73,7 @@ app.post('/gchat', async (req, res) => {
 /* ===== 공통 두뇌 ===== */
 async function handleAsync(utterance) {
   const intent = await parseIntent(utterance);
-  if (intent.action === 'chat') return chat(utterance);  // 인사·잡담·범위 밖
+  if (intent.action === 'chat') return chat(utterance);
   const gas = await fetchGas(intent);
   return summarize(utterance, gas);
 }
@@ -114,7 +101,7 @@ async function parseIntent(utterance) {
   try {
     const txt = (await askAI(prompt)).replace(/```json|```/g, '').trim();
     const o = JSON.parse(txt);
-    const ok = ['calendar','gmail','drive','sheet','chat'];
+    const ok = ['calendar', 'gmail', 'drive', 'sheet', 'chat'];
     return {
       action: ok.includes(o.action) ? o.action : 'chat',
       from: o.from && o.from !== 'null' ? o.from : null,
@@ -135,7 +122,7 @@ async function chat(utterance) {
 - 네가 할 수 있는 일은 '구글 캘린더 일정 / 지메일 메일 / 드라이브 파일 / 구글 시트' 조회·요약이야.
 - 못 하는 요청(메일 보내기, 일정 추가, 날씨 등)이면 살짝 사과하고 할 수 있는 걸 자연스럽게 안내해.
 - 단순 인사면 반갑게 받아주고, 필요하면 도울 수 있다고 가볍게 덧붙여.
-- 인사말 장황하게 늘이지 말고 2~3문장 이내.`;
+- 2~3문장 이내로 짧게.`;
   return (await askAI(prompt)).slice(0, 980);
 }
 
