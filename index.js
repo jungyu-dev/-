@@ -21,10 +21,22 @@ const model = genAI.getGenerativeModel({
   model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
 });
 
-/* ===== AI 호출 (모델 교체는 여기 한 곳만) ===== */
-async function askAI(prompt) {
-  const r = await model.generateContent(prompt);
-  return r.response.text();
+/* ===== AI 호출 (503 혼잡 / 429 한도 / 500 시 자동 재시도) ===== */
+async function askAI(prompt, tries = 3) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await model.generateContent(prompt);
+      return r.response.text();
+    } catch (e) {
+      const status = e?.status || e?.response?.status;
+      if ((status === 503 || status === 429 || status === 500) && i < tries - 1) {
+        console.warn(`[retry] ${status} \u2014 ${1.5 * (i + 1)}s 후 재시도 (${i + 1}/${tries - 1})`);
+        await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
 }
 
 app.get('/', (_req, res) => res.send('skill server ok'));
