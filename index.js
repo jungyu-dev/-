@@ -1,24 +1,17 @@
-/*** 카카오 콜백 오케스트레이터 (Express on Render) **************************
- * 흐름:
- *   1) 카카오 스킬 요청 수신
- *   2) 5초 안에 즉시 ACK (useCallback:true, '분석 중' 말풍선)
- *   3) 응답 이후 비동기로: 제미나이 의도·날짜 파싱 → GAS 데이터 → 제미나이 요약
- *   4) userRequest.callbackUrl 로 최종 말풍선 POST (콜백 창 1분 이내)
+/*** 카카오 + 슬랙 겸용 비서 서버 (Express on Render) *********************
+ * /skill  → 카카오 스킬 (콜백 모드: 즉시 ACK 후 callbackUrl로 최종 응답)
+ * /slack  → 슬랙 슬래시 명령 (즉시 ACK 후 response_url로 최종 응답)
+ * 두 입구가 같은 두뇌(parseIntent → fetchGas → summarize)를 공유한다.
  *
- * Render 환경변수:
- *   GAS_URL        구글 웹앱 /exec URL
- *   GAS_TOKEN      GAS의 SHARED_TOKEN 과 동일
- *   GEMINI_API_KEY 제미나이 API 키
- *   GEMINI_MODEL   (선택) 기본 gemini-2.5-flash
- *
- * package.json 에 "type":"module" 필요. 의존성: express, axios, @google/generative-ai
- ***************************************************************************/
+ * Render 환경변수: GAS_URL, GAS_TOKEN, GEMINI_API_KEY, GEMINI_MODEL
+ *********************************************************************/
 import express from 'express';
 import axios from 'axios';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const app = express();
-app.use(express.json());
+app.use(express.json());                          // 카카오용 (JSON 바디)
+app.use(express.urlencoded({ extended: true }));  // 슬랙 슬래시 명령용 (폼 바디)
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
@@ -29,43 +22,60 @@ const model = genAI.getGenerativeModel({
 
 app.get('/', (_req, res) => res.send('skill server ok'));
 
-/* 카카오 스킬 엔드포인트 */
+/* ===== 카카오 스킬 엔드포인트 ===== */
 app.post('/skill', (req, res) => {
   const ur = req.body?.userRequest || {};
   const utterance   = ur.utterance || '';
   const callbackUrl = ur.callbackUrl;
 
-  // ── ① 5초 안에 즉시 ACK (콜백 모드). template 필드는 넣지 않는다.
+  // 5초 안에 즉시 ACK (콜백 모드)
   res.json({
     version: '2.0',
     useCallback: true,
     data: { text: '📋 데이터 보고 있어요… 5~15초만 기다려 주세요!' },
   });
 
-  // 봇테스트 등 콜백 미지원 환경이면 callbackUrl 이 없다 → 비동기 진행 불가
   if (!callbackUrl) {
-    console.warn('[skip] callbackUrl 없음 (배포 채널 + AI챗봇 전환 시에만 동작)');
+    console.warn('[kakao] callbackUrl 없음 (AI챗봇 전환 + 배포 채널에서만 동작)');
     return;
   }
-
-  // ── ② 무거운 작업은 응답을 보낸 뒤 비동기로 실행
-  handleAsync(utterance, callbackUrl).catch(async (err) => {
-    console.error('[async error]', err?.message || err);
-    await sendCallback(callbackUrl, '⚠️ 처리 중 오류가 났어요. 잠시 후 다시 시도해 주세요.')
-      .catch(() => {});
-  });
+  handleAsync(utterance)
+    .then((text) => sendKakao(callbackUrl, text))
+    .catch(async (err) => {
+      console.error('[kakao async]', err?.message || err);
+      await sendKakao(callbackUrl, '⚠️ 처리 중 오류가 났어요.').catch(() => {});
+    });
 });
 
-async function handleAsync(utterance, callbackUrl) {
-  const intent = await parseIntent(utterance);          // 1) 의도 + 날짜
-  const gas    = await fetchGas(intent);                // 2) 구글 데이터
-  const text   = await summarize(utterance, gas);       // 3) 한국어 브리핑
-  await sendCallback(callbackUrl, text);                // 4) 최종 말풍선
+/* ===== 슬랙 슬래시 명령 엔드포인트 ===== */
+app.post('/slack', (req, res) => {
+  const text        = req.body?.text || '';          // 명령어 뒤에 친 내용
+  const responseUrl = req.body?.response_url;         // 지연 응답용 (30분 유효)
+
+  // 3초 안에 즉시 ACK ('ephemeral' = 본인에게만 보임)
+  res.json({ response_type: 'ephemeral', text: '📋 데이터 보고 있어요… 잠시만요!' });
+
+  if (!responseUrl) {
+    console.warn('[slack] response_url 없음');
+    return;
+  }
+  handleAsync(text)
+    .then((out) => postSlack(responseUrl, out))
+    .catch(async (err) => {
+      console.error('[slack async]', err?.message || err);
+      await postSlack(responseUrl, '⚠️ 처리 중 오류가 났어요.').catch(() => {});
+    });
+});
+
+/* ===== 공통 두뇌 파이프라인 ===== */
+async function handleAsync(utterance) {
+  const intent = await parseIntent(utterance);  // 의도 + 날짜
+  const gas    = await fetchGas(intent);        // 구글 데이터
+  return summarize(utterance, gas);             // 한국어 브리핑
 }
 
-/* 1) 제미나이로 의도 + 날짜 파싱 — 여기서 '6월 22일' 같은 자유 표현이 해결됨 */
 async function parseIntent(utterance) {
-  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); // yyyy-mm-dd
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
   const prompt =
 `오늘은 ${today} (Asia/Seoul). 아래 발화를 분석해 JSON 한 줄만 출력해.
 발화: "${utterance}"
@@ -84,11 +94,10 @@ async function parseIntent(utterance) {
       to:   obj.to   && obj.to   !== 'null' ? obj.to   : null,
     };
   } catch {
-    return { action: 'calendar', from: null, to: null }; // 파싱 실패 시 안전 기본값
+    return { action: 'calendar', from: null, to: null };
   }
 }
 
-/* 2) GAS 호출 — axios 가 302 를 자동 추적하므로 그대로 JSON 수신 */
 async function fetchGas(intent) {
   const params = new URLSearchParams({ token: GAS_TOKEN, action: intent.action });
   if (intent.action === 'calendar') {
@@ -102,25 +111,31 @@ async function fetchGas(intent) {
   return data;
 }
 
-/* 3) 제미나이로 카카오 말풍선용 한국어 브리핑 생성 */
 async function summarize(utterance, gas) {
   const prompt =
-`너는 준규 님의 업무 비서야. 아래 구글 데이터를 보고 카카오톡 말풍선용 한국어 브리핑을 써.
+`너는 준규 님의 업무 비서야. 아래 구글 데이터를 보고 메신저 말풍선용 한국어 브리핑을 써.
 사용자 요청: "${utterance}"
 데이터(JSON): ${JSON.stringify(gas).slice(0, 6000)}
 규칙: 핵심만, 항목은 줄바꿈으로, 이모지 약간만, 인사말 없이 바로, 950자 이내.`;
   const r = await model.generateContent(prompt);
-  return r.response.text().slice(0, 980); // 카카오 simpleText 길이 안전선
+  return r.response.text().slice(0, 980);
 }
 
-/* 4) 카카오 콜백 — 응답 포맷은 일반 스킬 응답과 동일 */
-async function sendCallback(callbackUrl, text) {
+/* ===== 출구 ===== */
+async function sendKakao(callbackUrl, text) {
   await axios.post(
     callbackUrl,
     { version: '2.0', template: { outputs: [{ simpleText: { text } }] } },
     { timeout: 10000 },
   );
 }
+async function postSlack(responseUrl, text) {
+  await axios.post(
+    responseUrl,
+    { response_type: 'ephemeral', text },
+    { timeout: 10000 },
+  );
+}
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`skill server on :${PORT}`));
+app.listen(PORT, () => console.log(`server on :${PORT}`));
