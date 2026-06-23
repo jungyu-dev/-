@@ -1,6 +1,6 @@
 {
   "name": "kakao-google-assistant",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -9,6 +9,6 @@
   "dependencies": {
     "express": "^4.19.2",
     "axios": "^1.7.2",
-    "@google/generative-ai": "^0.21.0"
+    "@anthropic-ai/sdk": "^0.105.0"
   }
 }
