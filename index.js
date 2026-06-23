@@ -1,14 +1,14 @@
-/*** 카카오 + 슬랙 + 구글챗 겸용 비서 서버 (Claude 버전, Express on Render) ***
+/*** 카카오 + 슬랙 + 구글챗 겸용 비서 서버 (Gemini 버전, Express on Render) ***
  * /skill  → 카카오 (콜백: 즉시 ACK 후 callbackUrl로 최종 응답)
  * /slack  → 슬랙 슬래시 명령 (즉시 ACK 후 response_url로 최종 응답)
  * /gchat  → 구글 챗 (응답 제한 30초라 동기 응답)
  *
  * 두뇌: parseIntent(의도+날짜+잡담분류) → fetchGas / chat → summarize
- * Render 환경변수: GAS_URL, GAS_TOKEN, ANTHROPIC_API_KEY, (선택) CLAUDE_MODEL
+ * Render 환경변수: GAS_URL, GAS_TOKEN, GEMINI_API_KEY, (선택) GEMINI_MODEL
  *********************************************************************/
 import express from 'express';
 import axios from 'axios';
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const app = express();
 app.use(express.json());
@@ -16,17 +16,15 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({
+  model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+});
 
 /* ===== AI 호출 (모델 교체는 여기 한 곳만) ===== */
 async function askAI(prompt) {
-  const r = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
-  });
-  return r.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+  const r = await model.generateContent(prompt);
+  return r.response.text();
 }
 
 app.get('/', (_req, res) => res.send('skill server ok'));
