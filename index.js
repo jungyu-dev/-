@@ -47,9 +47,10 @@ function pendingSummary(p){
 }
 function fmtEvent(e){
   const t = e.title || '(제목 없음)';
-  if(e.allDay) return `📅 ${e.date} (종일) ${t}`;
+  const cat = e.category ? `[${e.category}] ` : '';
+  if(e.allDay) return `📅 ${e.date} (종일) ${cat}${t}`;
   const time = e.end ? `${e.start}–${e.end}` : e.start;
-  return `📅 ${e.date} ${time} ${t}`;
+  return `📅 ${e.date} ${time} ${cat}${t}`;
 }
 
 /* ===== AI 호출 (503/429/500 자동 재시도) ===== */
@@ -136,7 +137,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"target":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"target":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -147,7 +148,8 @@ ${historyText(history)}
 [gmail] gmailQuery=Gmail검색식 (from:이름 / is:unread / has:attachment / newer_than:3d). 막연하면 null.
 [drive] driveName=파일명에서 찾을 핵심 단어/문구(폴더 위치 무시, 부분일치). 예) "스마트홈 표준계약서 찾아줘"→driveName="표준계약서". 파일종류까지 좁혀야 할 때만 driveQuery=Drive검색식(mimeType 등). 보통은 driveName만 채우고 driveQuery는 null.
 [sheet] keyword=시트 이름 핵심 단어.
-[event] create/update/delete일 때: title=제목, date=yyyy-mm-dd, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. update/delete는 target에 기존 일정 찾을 키워드(제목 일부).
+[event] create/update/delete일 때: title=제목, date=yyyy-mm-dd, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지 중 하나, "기본"이라고 하면 "기본", 언급 없으면 null). update/delete는 target에 기존 일정 찾을 키워드(제목 일부).
+[되물음 이어받기] 비서가 직전에 일정의 빠진 정보(시간/분류 등)를 되물었다면, 사용자의 짧은 답("외근","오후 3시","기본" 등)을 직전 일정 요청에 합쳐 create로 완성해.
 해당 없는 필드는 null. 설명·코드블록 없이 JSON 한 줄만.`;
   try{
     const txt = (await askAI(prompt)).replace(/```json|```/g,'').trim();
@@ -158,7 +160,7 @@ ${historyText(history)}
     return {
       action: ok.includes(o.action)?o.action:'chat',
       from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
-      event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, target:c(ev.target) },
+      event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), target:c(ev.target) },
     };
   }catch{ return { action:'chat', event:{} }; }
 }
@@ -170,6 +172,7 @@ async function prepareWrite(intent, key){
     if(!e.title) return '무슨 일정을 추가할까요? 제목을 알려주세요. 📝';
     if(!e.date)  return `'${e.title}' 일정을 며칠에 추가할까요? 📅`;
     if(!e.allDay && !e.start) return `'${e.title}' (${e.date}) — 몇 시로 잡을까요? ⏰ 종일로 하려면 "종일"이라고 해주세요.`;
+    if(!e.category) return `'${e.title}' (${e.date}${e.start?' '+e.start:''}) — 어디로 분류할까요? 📂\n내근 / 외근 / 손님 / 의사결정회의 / 공지·기타 / 기본 중에 골라주세요.`;
     setPending(key, { op:'create', event:e });
     return `이렇게 추가할게요 👇\n${fmtEvent(e)}\n\n맞으면 "응", 아니면 "취소"라고 해주세요.`;
   }
@@ -180,26 +183,26 @@ async function prepareWrite(intent, key){
   if(found.length>1) return '해당 일정이 여러 개예요. 어떤 거예요? (시간이나 제목을 더 구체적으로)\n'+found.map(x=>`• ${x.start} ${x.title}`).join('\n');
   const t = found[0];
   if(intent.action==='delete'){
-    setPending(key,{ op:'delete', id:t.id, summary:`${t.start} ${t.title}` });
+    setPending(key,{ op:'delete', id:t.id, calId:t.calId, summary:`${t.start} ${t.title}` });
     return `이 일정을 삭제할게요 👇\n🗑️ ${t.start} ${t.title}\n\n맞으면 "응", 아니면 "취소".`;
   }
   const changes = { title:e.title, date:e.date, start:e.start, end:e.end };
-  setPending(key,{ op:'update', id:t.id, changes, summary:`${t.start} ${t.title}` });
+  setPending(key,{ op:'update', id:t.id, calId:t.calId, changes, summary:`${t.start} ${t.title}` });
   return `이 일정을 이렇게 바꿀게요 👇\n기존: ${t.start} ${t.title}\n변경: ${fmtEvent({ title:e.title||t.title, date:e.date, start:e.start, end:e.end, allDay:e.allDay })}\n\n맞으면 "응", 아니면 "취소".`;
 }
 
 async function execPending(p){
   if(p.op==='create'){
-    const r = await gasCall({ action:'cal_create', title:p.event.title||'', date:p.event.date||'', start:p.event.start||'', end:p.event.end||'', allDay:p.event.allDay?'1':'' });
+    const r = await gasCall({ action:'cal_create', title:p.event.title||'', date:p.event.date||'', start:p.event.start||'', end:p.event.end||'', allDay:p.event.allDay?'1':'', category:p.event.category||'' });
     return r?.result?.ok ? `✅ 추가했어요!\n${fmtEvent(p.event)}` : '⚠️ 추가에 실패했어요.';
   }
   if(p.op==='delete'){
-    const r = await gasCall({ action:'cal_delete', id:p.id });
+    const r = await gasCall({ action:'cal_delete', id:p.id, calId:p.calId||'' });
     return r?.result?.ok ? `🗑️ 삭제했어요: ${p.summary}` : '⚠️ 삭제에 실패했어요.';
   }
   if(p.op==='update'){
     const c = p.changes;
-    const r = await gasCall({ action:'cal_update', id:p.id, title:c.title||'', date:c.date||'', start:c.start||'', end:c.end||'' });
+    const r = await gasCall({ action:'cal_update', id:p.id, calId:p.calId||'', title:c.title||'', date:c.date||'', start:c.start||'', end:c.end||'' });
     return r?.result?.ok ? `✏️ 수정했어요: ${p.summary}` : '⚠️ 수정에 실패했어요.';
   }
   return '⚠️ 알 수 없는 작업이에요.';
