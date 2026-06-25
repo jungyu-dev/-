@@ -136,7 +136,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel","from":null,"to":null,"gmailQuery":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"target":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"target":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -145,7 +145,7 @@ ${historyText(history)}
 [맥락 이어받기] "그중에서/그건/그럼 그건/PDF로 된 거" 처럼 앞을 가리키면 직전 대화의 대상·조건을 이어받아 채워.
 [calendar] from/to 날짜. "오늘"→from=to=오늘, 하루면 from=to 동일, "이번주/다음주/주말/이번달"은 범위, 없으면 null.
 [gmail] gmailQuery=Gmail검색식 (from:이름 / is:unread / has:attachment / newer_than:3d). 막연하면 null.
-[drive] driveQuery=Drive검색식 (title contains '단어' / mimeType = 'application/pdf' 등 and 조합, trashed 조건은 넣지 마). 막연하면 null.
+[drive] driveName=파일명에서 찾을 핵심 단어/문구(폴더 위치 무시, 부분일치). 예) "스마트홈 표준계약서 찾아줘"→driveName="표준계약서". 파일종류까지 좁혀야 할 때만 driveQuery=Drive검색식(mimeType 등). 보통은 driveName만 채우고 driveQuery는 null.
 [sheet] keyword=시트 이름 핵심 단어.
 [event] create/update/delete일 때: title=제목, date=yyyy-mm-dd, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. update/delete는 target에 기존 일정 찾을 키워드(제목 일부).
 해당 없는 필드는 null. 설명·코드블록 없이 JSON 한 줄만.`;
@@ -157,7 +157,7 @@ ${historyText(history)}
     const ev = o.event || {};
     return {
       action: ok.includes(o.action)?o.action:'chat',
-      from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
+      from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
       event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, target:c(ev.target) },
     };
   }catch{ return { action:'chat', event:{} }; }
@@ -228,7 +228,7 @@ async function fetchGas(intent){
   const extra = { action:intent.action };
   if(intent.action==='calendar'){ if(intent.from) extra.from=intent.from; if(intent.to) extra.to=intent.to; }
   else if(intent.action==='gmail'){ if(intent.gmailQuery) extra.q=intent.gmailQuery; }
-  else if(intent.action==='drive'){ if(intent.driveQuery) extra.q=intent.driveQuery; }
+  else if(intent.action==='drive'){ if(intent.driveName) extra.name=intent.driveName; if(intent.driveQuery) extra.q=intent.driveQuery; }
   else if(intent.action==='sheet'){ if(intent.keyword) extra.keyword=intent.keyword; }
   return gasCall(extra);
 }
@@ -241,7 +241,9 @@ async function summarize(utterance, gas, history){
 [데이터(JSON)] ${JSON.stringify(gas).slice(0,7000)}
 규칙: 핵심만, 항목은 줄바꿈으로, 이모지 약간, 인사말 없이 바로, 950자 이내.
 - 메일이면 보낸사람/제목 위주, 안읽음(unread:true) 표시. 드라이브는 파일명/수정일 위주.
-- 앞 대화를 이어받은 요청이면 그 맥락에 맞게. 결과가 비면 "해당 조건엔 없네요" + 어떤 조건으로 찾았는지 한 줄.`;
+- 드라이브/시트 결과는 파일명·수정일과 함께 url을 그대로 적어 바로 열 수 있게 해.
+- 앞 대화를 이어받은 요청이면 그 맥락에 맞게.
+- 결과 배열이 비어 있으면 둘러대지 말고 "드라이브 전체를 'XX'로 찾아봤는데 그런 파일은 없네요 🔍"처럼 솔직하게. "제가 직접 찾아드릴게요", "링크를 찾아 보내드릴게요" 같은 지키지 못할 약속은 절대 하지 마.`;
   return (await askAI(prompt)).slice(0,980);
 }
 
