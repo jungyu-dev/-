@@ -113,6 +113,9 @@ async function handleAsync(utterance, key){
   let reply;
   if(pending && action==='confirm'){ reply = await execPending(pending); clearPending(key); }
   else if(pending && action==='cancel'){ clearPending(key); reply = '알겠어요, 취소했어요. 😊'; }
+  else if(pending && (action==='revise' || (pending.op==='create' && (action==='create'||action==='update')))){
+    reply = await revisePending(pending, intent, key);
+  }
   else if(action==='create'||action==='update'||action==='delete'){ reply = await prepareWrite({...intent, action}, key); }
   else if(action==='chat'){ clearPending(key); reply = await chat(utterance, history); }
   else { clearPending(key); const gas = await fetchGas({...intent, action}); reply = await summarize(utterance, gas, history); }
@@ -128,7 +131,11 @@ async function parseIntent(utterance, history, pending){
   const weekday = now.toLocaleDateString('ko-KR',{ timeZone:'Asia/Seoul', weekday:'long' });
   const pendingBlock = pending
     ? `[대기 중 작업] 방금 사용자에게 이걸 확인 요청했어 → ${pendingSummary(pending)}
-사용자 답이 긍정(응/네/맞아/그래/좋아/해줘)이면 action="confirm". 부정(아니/취소/안돼/하지마)이면 action="cancel". 시간·내용을 바꾸자는 거면 create/update/delete로 새 값 채워. 전혀 다른 요청이면 그대로.`
+사용자 답을 이렇게 분류해:
+- 긍정(응/네/맞아/그래/좋아/그대로 진행/해줘) → action="confirm"
+- 부정(아니/취소/안돼/하지마) → action="cancel"
+- 위 대기 일정의 제목·시간·날짜·분류·참석자를 바꾸자는 요청(예: "이름을 ~로 바꿔서", "3시로", "외근으로", "박성범도 추가") → action="revise" 로 하고, event에 '바꿀 값만' 채워. (기존 일정을 새로 검색하는 update가 아님!)
+- 위 일정과 전혀 무관한 새 요청 → 그 요청대로.`
     : '';
   const prompt =
 `오늘은 ${today} (${weekday}), Asia/Seoul. 아래 맥락을 보고 '이번 발화'를 분석해 JSON 한 줄만 출력해.
@@ -138,7 +145,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"target":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"target":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -160,7 +167,7 @@ ${historyText(history)}
   try{
     const txt = (await askAI(prompt)).replace(/```json|```/g,'').trim();
     const o = JSON.parse(txt);
-    const ok = ['calendar','gmail','drive','sheet','chat','create','update','delete','confirm','cancel'];
+    const ok = ['calendar','gmail','drive','sheet','chat','create','update','delete','confirm','cancel','revise'];
     const c = v => (v && v!=='null' ? v : null);
     const ev = o.event || {};
     return {
@@ -169,6 +176,28 @@ ${historyText(history)}
       event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], target:c(ev.target) },
     };
   }catch{ return { action:'chat', event:{} }; }
+}
+
+/* 확인 대기 중인 일정에 '바꿀 값만' 반영하고 다시 확인 (검색 안 함) */
+async function revisePending(pending, intent, key){
+  if(pending.op !== 'create'){
+    // 수정/삭제 대기였던 경우는 그냥 새로 처리
+    clearPending(key);
+    return prepareWrite(intent, key);
+  }
+  const e = pending.event || {};
+  const n = intent.event || {};
+  const merged = {
+    title:   n.title   != null ? n.title   : e.title,
+    date:    n.date    != null ? n.date    : e.date,
+    start:   n.start   != null ? n.start   : e.start,
+    end:     n.end     != null ? n.end     : e.end,
+    allDay:  (n.start!=null||n.end!=null) ? false : (n.allDay || e.allDay),
+    category:n.category!= null ? n.category : e.category,
+    guests:  (n.guests && n.guests.length) ? Array.from(new Set([...(e.guests||[]), ...n.guests])) : (e.guests||[]),
+    names:   (n.names  && n.names.length)  ? Array.from(new Set([...(e.names||[]),  ...n.names]))  : (e.names||[]),
+  };
+  return prepareWrite({ action:'create', event: merged }, key);
 }
 
 /* ===== 쓰기 준비 (확인 메시지 만들고 대기에 저장) ===== */
