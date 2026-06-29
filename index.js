@@ -48,9 +48,10 @@ function pendingSummary(p){
 function fmtEvent(e){
   const t = e.title || '(제목 없음)';
   const cat = e.category ? `[${e.category}] ` : '';
-  if(e.allDay) return `📅 ${e.date} (종일) ${cat}${t}`;
-  const time = e.end ? `${e.start}–${e.end}` : e.start;
-  return `📅 ${e.date} ${time} ${cat}${t}`;
+  const base = e.allDay ? `📅 ${e.date} (종일) ${cat}${t}` : `📅 ${e.date} ${e.end?`${e.start}–${e.end}`:e.start} ${cat}${t}`;
+  const ppl = [].concat(e.names||[], e.guests||[]);
+  const g = ppl.length ? `\n👥 참석자: ${ppl.join(', ')}` : '';
+  return base + g;
 }
 
 /* ===== AI 호출 (503/429/500 자동 재시도) ===== */
@@ -137,7 +138,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"target":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"target":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -149,7 +150,12 @@ ${historyText(history)}
 [drive] driveName=파일명에서 찾을 핵심 단어/문구(폴더 위치 무시, 부분일치). 예) "스마트홈 표준계약서 찾아줘"→driveName="표준계약서". 파일종류까지 좁혀야 할 때만 driveQuery=Drive검색식(mimeType 등). 보통은 driveName만 채우고 driveQuery는 null.
 [sheet] keyword=시트 이름 핵심 단어.
 [event] create/update/delete일 때: title=제목, date=yyyy-mm-dd, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지 중 하나, "기본"이라고 하면 "기본", 언급 없으면 null). update/delete는 target에 기존 일정 찾을 키워드(제목 일부).
-[되물음 이어받기] 비서가 직전에 일정의 빠진 정보(시간/분류 등)를 되물었다면, 사용자의 짧은 답("외근","오후 3시","기본" 등)을 직전 일정 요청에 합쳐 create로 완성해.
+[되물음 이어받기] 비서가 직전에 일정의 빠진 정보(시간/분류/참석자 등)를 되물었다면, 사용자의 짧은 답을 직전 일정 요청에 합쳐 create로 완성해.
+[참석자] 일정에 동료를 부르면:
+- title(제목)에는 절대 사람 이름을 넣지 마. 제목은 순수 일정명만.
+- 이메일 주소가 있으면 guests 배열에 그 이메일을 넣어. (예: "sungbum@aqara.kr 초대" -> guests:["sungbum@aqara.kr"])
+- 한글 이름으로 부르면 names 배열에 그 이름을 넣어. (예: "박성범도 불러" -> names:["박성범"]) 이메일은 추측하지 마. 회사 디렉터리에서 서버가 변환해.
+- "나도"/"전준규도" 처럼 본인을 포함하라는 말이 있으면 guests에 "jungyu@aqara.kr" 포함.
 해당 없는 필드는 null. 설명·코드블록 없이 JSON 한 줄만.`;
   try{
     const txt = (await askAI(prompt)).replace(/```json|```/g,'').trim();
@@ -160,7 +166,7 @@ ${historyText(history)}
     return {
       action: ok.includes(o.action)?o.action:'chat',
       from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
-      event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), target:c(ev.target) },
+      event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], target:c(ev.target) },
     };
   }catch{ return { action:'chat', event:{} }; }
 }
@@ -193,8 +199,16 @@ async function prepareWrite(intent, key){
 
 async function execPending(p){
   if(p.op==='create'){
-    const r = await gasCall({ action:'cal_create', title:p.event.title||'', date:p.event.date||'', start:p.event.start||'', end:p.event.end||'', allDay:p.event.allDay?'1':'', category:p.event.category||'' });
-    return r?.result?.ok ? `✅ 추가했어요!\n${fmtEvent(p.event)}` : '⚠️ 추가에 실패했어요.';
+    const r = await gasCall({ action:'cal_create', title:p.event.title||'', date:p.event.date||'', start:p.event.start||'', end:p.event.end||'', allDay:p.event.allDay?'1':'', category:p.event.category||'', guests:(p.event.guests||[]).join(','), names:(p.event.names||[]).join(',') });
+    const res = r?.result;
+    if(!res?.ok) return '⚠️ 추가에 실패했어요.';
+    const ev2 = {...p.event, guests: res.guests||p.event.guests, names: []};
+    let msg = `✅ 추가했어요!\n${fmtEvent(ev2)}`;
+    const probs = [];
+    if(res.notFound?.length) probs.push(`'${res.notFound.join(", ")}'은(는) 디렉터리에서 못 찾았어요`);
+    if(res.ambiguous?.length) probs.push(`'${res.ambiguous.join(", ")}'은(는) 동명이인이 있어 못 정했어요`);
+    if(probs.length) msg += `\n⚠️ ${probs.join(' / ')} — 이메일로 알려주면 추가할게요.`;
+    return msg;
   }
   if(p.op==='delete'){
     const r = await gasCall({ action:'cal_delete', id:p.id, calId:p.calId||'' });
