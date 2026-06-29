@@ -47,6 +47,7 @@ function pendingSummary(p){
   if(p.op==='site_status') return `현장 상태 변경: ${p.summary} → ${p.status}`;
   return '';
 }
+function addDays(ymd, n){ const d=new Date(ymd+'T00:00:00+09:00'); d.setDate(d.getDate()+n); return d.toLocaleDateString('sv-SE',{timeZone:'Asia/Seoul'}); }
 function fmtEvent(e){
   const t = e.title || '(제목 없음)';
   const cat = e.category ? `[${e.category}] ` : '';
@@ -155,7 +156,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"target":null},"site":{"address":null,"vendor":null,"note":null,"startDate":null,"installDate":null,"endDate":null,"proposer":null,"fieldMgr":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"quote":null,"saleMonth":null,"orderCode":null,"query":null,"status":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"startDate":null,"installDate":null,"endDate":null,"proposer":null,"fieldMgr":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"quote":null,"saleMonth":null,"orderCode":null,"query":null,"status":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -169,7 +170,12 @@ ${historyText(history)}
 [현장리스트 시트] '현장리스트'에 현장을 다루면:
 - 새 현장 추가 → action="site_add". site에 말한 항목만 채워: address(현장주소·필수), vendor(인테리어 업체명), proposer(아카라 제안담당), fieldMgr(아카라 현장담당), startDate/installDate/endDate(착수·설치예정·종료예정일 yyyy-mm-dd), custName/custTel(고객성함·연락처), siteLead/siteLeadTel(현장책임·연락처), quote(예상견적), saleMonth(예상매출월), note(특이사항), design/install/appset(설계·설치·앱셋팅). 진행상태·현장코드는 서버가 자동(제안/빈칸)이니 넣지 마.
 - 현장 상태 변경 → action="site_status". site.query=현장 찾을 말(주소+업체명, 예: "테라디자인 베른"), site.status=제안|진행중|완료|취소.
-[event] create/update/delete일 때: title=제목, date=yyyy-mm-dd, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지 중 하나, "기본"이라고 하면 "기본", 언급 없으면 null). update/delete는 target에 기존 일정 찾을 키워드(제목 일부).
+[중요·날짜기준] '오늘/내일/어제/모레/이번주/다음주/요일'은 모두 위에 적힌 오늘 날짜(Asia/Seoul) 기준으로 정확히 환산해.
+[event] create/update/delete일 때: title=제목, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지, "기본"이면 "기본", 없으면 null). target=기존 일정 찾을 제목 키워드.
+  - date = '새로 바꿀(또는 추가할) 날짜' yyyy-mm-dd.
+  - findDate = '기존 일정이 현재 있는 날짜' yyyy-mm-dd (update/delete에서 일정을 찾을 날짜). findDateTo = 찾을 범위 끝(여러 날 뒤져야 할 때).
+  - 예) "내일 잡은 베른 감리를 수요일로 옮겨줘" → action=update, target="베른", findDate=(내일 날짜), date=(이번주 수요일 날짜).
+  - 찾을 날짜가 분명치 않으면 findDate=오늘, findDateTo=오늘+14일 로 넓게.
 [되물음 이어받기] 비서가 직전에 일정의 빠진 정보(시간/분류/참석자 등)를 되물었다면, 사용자의 짧은 답을 직전 일정 요청에 합쳐 create로 완성해.
 [참석자] 일정에 동료를 부르면:
 - title(제목)에는 절대 사람 이름을 넣지 마. 제목은 순수 일정명만.
@@ -186,7 +192,7 @@ ${historyText(history)}
     return {
       action: ok.includes(o.action)?o.action:'chat',
       from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
-      event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], target:c(ev.target) },
+      event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], findDate:c(ev.findDate), findDateTo:c(ev.findDateTo), target:c(ev.target) },
       site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','startDate','installDate','endDate','proposer','fieldMgr','custName','custTel','siteLead','siteLeadTel','quote','saleMonth','orderCode','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
     };
   }catch{ return { action:'chat', event:{}, site:{} }; }
@@ -268,11 +274,14 @@ async function prepareWrite(intent, key){
     setPending(key, { op:'create', event:e });
     return `이렇게 추가할게요 👇\n${fmtEvent(e)}\n\n맞으면 "응", 아니면 "취소"라고 해주세요.`;
   }
-  // update / delete : 대상 먼저 찾기
-  if(!e.date && !e.target) return `어떤 일정을 ${intent.action==='delete'?'삭제':'수정'}할까요? 날짜나 제목을 알려주세요.`;
-  const found = await gasCalSearch(e.date, e.target);
-  if(!found.length) return '그 조건에 맞는 일정을 못 찾았어요. 🔍 날짜나 제목을 더 구체적으로 알려주세요.';
-  if(found.length>1) return '해당 일정이 여러 개예요. 어떤 거예요? (시간이나 제목을 더 구체적으로)\n'+found.map(x=>`• ${x.start} ${x.title}`).join('\n');
+  // update / delete : 대상 먼저 찾기 (findDate=찾을 날짜, 없으면 오늘~+14일 범위)
+  if(!e.findDate && !e.date && !e.target) return `어떤 일정을 ${intent.action==='delete'?'삭제':'수정'}할까요? 날짜나 제목을 알려주세요.`;
+  const todayStr = new Date().toLocaleDateString('sv-SE', { timeZone:'Asia/Seoul' });
+  const fromDate = e.findDate || todayStr;
+  const toDate = e.findDateTo || e.findDate || addDays(fromDate, 14); // 찾을 날짜 없으면 2주 범위
+  const found = await gasCalSearch(fromDate, e.target, toDate);
+  if(!found.length) return `'${e.target||''}' 일정을 ${e.findDate?e.findDate+'에서':'가까운 날짜에서'} 못 찾았어요. 🔍 일정이 며칠에 있는지 알려주시면 정확해요.`;
+  if(found.length>1) return '해당 일정이 여러 개예요. 어떤 거예요? (날짜나 제목을 더 구체적으로)\n'+found.map(x=>`• ${x.start} ${x.title}`).join('\n');
   const t = found[0];
   if(intent.action==='delete'){
     setPending(key,{ op:'delete', id:t.id, calId:t.calId, summary:`${t.start} ${t.title}` });
@@ -336,8 +345,8 @@ async function gasCall(extra){
   const { data } = await axios.get(`${GAS_URL}?${params.toString()}`, { maxRedirects:5, timeout:20000 });
   return data;
 }
-async function gasCalSearch(date, keyword){
-  const d = await gasCall({ action:'cal_search', date:date||'', keyword:keyword||'' });
+async function gasCalSearch(date, keyword, dateTo){
+  const d = await gasCall({ action:'cal_search', date:date||'', dateTo:dateTo||'', keyword:keyword||'' });
   return d?.result || [];
 }
 async function fetchGas(intent){
