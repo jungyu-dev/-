@@ -117,6 +117,7 @@ async function handleAsync(utterance, key){
     reply = await revisePending(pending, intent, key);
   }
   else if(action==='create'||action==='update'||action==='delete'){ reply = await prepareWrite({...intent, action}, key); }
+  else if(action==='site_add'||action==='site_status'){ clearPending(key); reply = await prepareSite({...intent, action}, key); }
   else if(action==='chat'){ clearPending(key); reply = await chat(utterance, history); }
   else { clearPending(key); const gas = await fetchGas({...intent, action}); reply = await summarize(utterance, gas, history); }
 
@@ -145,7 +146,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"target":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"target":null},"site":{"address":null,"vendor":null,"note":null,"startDate":null,"installDate":null,"endDate":null,"proposer":null,"fieldMgr":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"quote":null,"saleMonth":null,"orderCode":null,"query":null,"status":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -156,6 +157,9 @@ ${historyText(history)}
 [gmail] gmailQuery=Gmail검색식 (from:이름 / is:unread / has:attachment / newer_than:3d). 막연하면 null.
 [drive] driveName=파일명에서 찾을 핵심 단어/문구(폴더 위치 무시, 부분일치). 예) "스마트홈 표준계약서 찾아줘"→driveName="표준계약서". 파일종류까지 좁혀야 할 때만 driveQuery=Drive검색식(mimeType 등). 보통은 driveName만 채우고 driveQuery는 null.
 [sheet] keyword=시트 이름 핵심 단어.
+[현장리스트 시트] '현장리스트'에 현장을 다루면:
+- 새 현장 추가 → action="site_add". site에 말한 항목만 채워: address(현장주소·필수), vendor(인테리어 업체명), proposer(아카라 제안담당), fieldMgr(아카라 현장담당), startDate/installDate/endDate(착수·설치예정·종료예정일 yyyy-mm-dd), custName/custTel(고객성함·연락처), siteLead/siteLeadTel(현장책임·연락처), quote(예상견적), saleMonth(예상매출월), note(특이사항), design/install/appset(설계·설치·앱셋팅). 진행상태·현장코드는 서버가 자동(제안/빈칸)이니 넣지 마.
+- 현장 상태 변경 → action="site_status". site.query=현장 찾을 말(주소+업체명, 예: "테라디자인 베른"), site.status=제안|진행중|완료|취소.
 [event] create/update/delete일 때: title=제목, date=yyyy-mm-dd, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지 중 하나, "기본"이라고 하면 "기본", 언급 없으면 null). update/delete는 target에 기존 일정 찾을 키워드(제목 일부).
 [되물음 이어받기] 비서가 직전에 일정의 빠진 정보(시간/분류/참석자 등)를 되물었다면, 사용자의 짧은 답을 직전 일정 요청에 합쳐 create로 완성해.
 [참석자] 일정에 동료를 부르면:
@@ -167,15 +171,16 @@ ${historyText(history)}
   try{
     const txt = (await askAI(prompt)).replace(/```json|```/g,'').trim();
     const o = JSON.parse(txt);
-    const ok = ['calendar','gmail','drive','sheet','chat','create','update','delete','confirm','cancel','revise'];
+    const ok = ['calendar','gmail','drive','sheet','chat','create','update','delete','confirm','cancel','revise','site_add','site_status'];
     const c = v => (v && v!=='null' ? v : null);
     const ev = o.event || {};
     return {
       action: ok.includes(o.action)?o.action:'chat',
       from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
       event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], target:c(ev.target) },
+      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','startDate','installDate','endDate','proposer','fieldMgr','custName','custTel','siteLead','siteLeadTel','quote','saleMonth','orderCode','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
     };
-  }catch{ return { action:'chat', event:{} }; }
+  }catch{ return { action:'chat', event:{}, site:{} }; }
 }
 
 /* 확인 대기 중인 일정에 '바꿀 값만' 반영하고 다시 확인 (검색 안 함) */
@@ -198,6 +203,41 @@ async function revisePending(pending, intent, key){
     names:   (n.names  && n.names.length)  ? Array.from(new Set([...(e.names||[]),  ...n.names]))  : (e.names||[]),
   };
   return prepareWrite({ action:'create', event: merged }, key);
+}
+
+/* ===== 현장리스트 쓰기 준비/실행 ===== */
+function fmtSite(st){
+  const L = [];
+  const add=(label,v)=>{ if(v) L.push(`• ${label}: ${v}`); };
+  add('현장주소', st.address); add('인테리어 업체명', st.vendor);
+  add('아카라 제안담당', st.proposer); add('아카라 현장담당', st.fieldMgr);
+  add('착수일', st.startDate); add('설치예정일', st.installDate); add('종료예정일', st.endDate);
+  add('고객성함', st.custName); add('고객연락처', st.custTel);
+  add('현장책임', st.siteLead); add('현장책임 연락처', st.siteLeadTel);
+  add('예상견적', st.quote); add('예상매출월', st.saleMonth);
+  add('설계', st.design); add('설치공사', st.install); add('앱셋팅', st.appset);
+  add('특이사항', st.note);
+  return L.join('\n');
+}
+
+async function prepareSite(intent, key){
+  const st = intent.site || {};
+  if(intent.action==='site_add'){
+    if(!st.address) return '새 현장은 현장주소부터 알려주세요. 📍 (주소를 넣으면 진행상태는 자동으로 "제안"이 돼요)';
+    setPending(key, { op:'site_add', site: st });
+    return `이렇게 맨 위에 추가할게요 👇\n📋 현장리스트 (진행상태: 제안)\n${fmtSite(st)}\n\n맞으면 "응", 아니면 "취소".`;
+  }
+  // site_status : 현장 찾기
+  if(!st.query) return '어떤 현장의 상태를 바꿀까요? 주소나 업체명으로 알려주세요. (예: "테라디자인 베른 현장")';
+  if(!st.status) return '어떤 상태로 바꿀까요? 제안 / 진행중 / 완료 / 취소 중에 알려주세요.';
+  const found = await gasCall({ action:'site_find', q: st.query });
+  const list = found?.result || [];
+  if(!list.length) return `'${st.query}'에 맞는 현장을 못 찾았어요. 🔍 주소나 업체명을 더 구체적으로 알려주세요.`;
+  if(list.length>1) return '해당 현장이 여러 개예요. 더 구체적으로 알려주세요.\n'+list.map(x=>`• ${x.code||'(코드없음)'} ${x.address} / ${x.vendor} [${x.status}]`).join('\n');
+  const t = list[0];
+  setPending(key, { op:'site_status', row:t.row, status:st.status, summary:`${t.address} / ${t.vendor}` });
+  let extra = (st.status==='진행중'||st.status==='완료') && !t.code ? '\n(현장코드가 자동 생성돼요)' : '';
+  return `이 현장 상태를 바꿀게요 👇\n📋 ${t.address} / ${t.vendor}\n${t.status} → ${st.status}${extra}\n\n맞으면 "응", 아니면 "취소".`;
 }
 
 /* ===== 쓰기 준비 (확인 메시지 만들고 대기에 저장) ===== */
@@ -243,6 +283,18 @@ async function execPending(p){
     const r = await gasCall({ action:'cal_delete', id:p.id, calId:p.calId||'' });
     return r?.result?.ok ? `🗑️ 삭제했어요: ${p.summary}` : '⚠️ 삭제에 실패했어요.';
   }
+  if(p.op==='site_add'){
+    const r = await gasCall(Object.assign({ action:'site_add' }, p.site));
+    return r?.result?.ok ? `✅ 현장을 추가했어요! (진행상태: 제안)\n${fmtSite(p.site)}` : '⚠️ 현장 추가에 실패했어요.';
+  }
+  if(p.op==='site_status'){
+    const r = await gasCall({ action:'site_status', row:p.row, status:p.status });
+    const res = r?.result;
+    if(!res?.ok) return '⚠️ 상태 변경에 실패했어요.';
+    let msg = `✅ 상태를 "${res.status}"로 바꿨어요: ${p.summary}`;
+    if(res.code) msg += `\n🏷️ 현장코드 자동 생성: ${res.code}`;
+    return msg;
+  }
   if(p.op==='update'){
     const c = p.changes;
     const r = await gasCall({ action:'cal_update', id:p.id, calId:p.calId||'', title:c.title||'', date:c.date||'', start:c.start||'', end:c.end||'' });
@@ -262,7 +314,8 @@ async function chat(utterance, history){
 
 /* ===== GAS 호출 ===== */
 async function gasCall(extra){
-  const params = new URLSearchParams({ token:GAS_TOKEN, ...extra });
+  const clean = {}; Object.keys(extra||{}).forEach(k=>{ if(extra[k]!=null) clean[k]=extra[k]; });
+  const params = new URLSearchParams({ token:GAS_TOKEN, ...clean });
   const { data } = await axios.get(`${GAS_URL}?${params.toString()}`, { maxRedirects:5, timeout:20000 });
   return data;
 }
