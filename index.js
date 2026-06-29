@@ -45,6 +45,8 @@ function pendingSummary(p){
   if(p.op==='update') return `수정: ${p.summary}`;
   if(p.op==='site_add') return `현장 추가 (진행상태: 제안)\n${fmtSite(p.site)}`;
   if(p.op==='site_status') return `현장 상태 변경: ${p.summary} → ${p.status}`;
+  if(p.op==='update_many') return `${p.summary} 일정 일괄 수정`;
+  if(p.op==='delete_many') return `${p.summary} 일정 일괄 삭제`;
   return '';
 }
 function addDays(ymd, n){ const d=new Date(ymd+'T00:00:00+09:00'); d.setDate(d.getDate()+n); return d.toLocaleDateString('sv-SE',{timeZone:'Asia/Seoul'}); }
@@ -126,7 +128,7 @@ async function handleAsync(utterance, key){
     // 대기 중인데 못 알아들은 말/엉뚱한 말 → 대기를 깨지 말고 다시 확인 요청
     reply = `방금 건 잘 못 알아들었어요. 🤔 아래 내용으로 진행할까요?\n\n${pendingSummary(pending)}\n\n"응"이면 진행, "취소"면 취소할게요.`;
   }
-  else if(action==='create'||action==='update'||action==='delete'){ clearPending(key); reply = await prepareWrite({...intent, action}, key); }
+  else if(action==='create'||action==='update'||action==='delete'){ clearPending(key); reply = await prepareWrite({...intent, action, _utterance:utterance}, key); }
   else if(action==='site_add'||action==='site_status'){ clearPending(key); reply = await prepareSite({...intent, action}, key); }
   else if(action==='chat'){ clearPending(key); reply = await chat(utterance, history); }
   else { clearPending(key); const gas = await fetchGas({...intent, action}); reply = await summarize(utterance, gas, history); }
@@ -281,7 +283,22 @@ async function prepareWrite(intent, key){
   const toDate = e.findDateTo || e.findDate || addDays(fromDate, 14); // 찾을 날짜 없으면 2주 범위
   const found = await gasCalSearch(fromDate, e.target, toDate);
   if(!found.length) return `'${e.target||''}' 일정을 ${e.findDate?e.findDate+'에서':'가까운 날짜에서'} 못 찾았어요. 🔍 일정이 며칠에 있는지 알려주시면 정확해요.`;
-  if(found.length>1) return '해당 일정이 여러 개예요. 어떤 거예요? (날짜나 제목을 더 구체적으로)\n'+found.map(x=>`• ${x.start} ${x.title}`).join('\n');
+  if(found.length>1){
+    // "둘 다 / 전부 / 모두 / 다" 같은 일괄 의사가 있으면 한 번에 처리
+    const wantAll = /둘\s*다|전부|모두|다\s*(변경|바꿔|삭제|지워)|all/i.test(intent._utterance||'');
+    if(wantAll){
+      const items = found.map(x=>({ id:x.id, calId:x.calId }));
+      const listTxt = found.map(x=>`• ${x.start} ${x.title}`).join('\n');
+      if(intent.action==='delete'){
+        setPending(key,{ op:'delete_many', items, summary:`${found.length}개`, listTxt });
+        return `아래 ${found.length}개를 전부 삭제할게요 👇\n${listTxt}\n\n맞으면 "응", 아니면 "취소".`;
+      }
+      const changes = { title:e.title, date:e.date, start:e.start, end:e.end };
+      setPending(key,{ op:'update_many', items, changes, summary:`${found.length}개`, listTxt });
+      return `아래 ${found.length}개를 전부 이렇게 바꿀게요 👇\n${listTxt}\n→ 변경: ${fmtEvent({ title:e.title, date:e.date, start:e.start, end:e.end, allDay:e.allDay })}\n\n맞으면 "응", 아니면 "취소".`;
+    }
+    return '해당 일정이 여러 개예요. 어떤 거예요? (날짜·제목을 더 구체적으로, 또는 "둘 다 변경/삭제"라고 말해주세요)\n'+found.map(x=>`• ${x.start} ${x.title}`).join('\n');
+  }
   const t = found[0];
   if(intent.action==='delete'){
     setPending(key,{ op:'delete', id:t.id, calId:t.calId, summary:`${t.start} ${t.title}` });
@@ -320,6 +337,15 @@ async function execPending(p){
     let msg = `✅ 상태를 "${res.status}"로 바꿨어요: ${p.summary}`;
     if(res.code) msg += `\n🏷️ 현장코드 자동 생성: ${res.code}`;
     return msg;
+  }
+  if(p.op==='update_many'){
+    const c = p.changes;
+    const r = await gasCall({ action:'cal_update_many', items: JSON.stringify(p.items), title:c.title||'', date:c.date||'', start:c.start||'', end:c.end||'' });
+    return r?.result?.ok ? `✏️ ${r.result.count}개 일정을 수정했어요.` : '⚠️ 일괄 수정에 실패했어요.';
+  }
+  if(p.op==='delete_many'){
+    const r = await gasCall({ action:'cal_delete_many', items: JSON.stringify(p.items) });
+    return r?.result?.ok ? `🗑️ ${r.result.count}개 일정을 삭제했어요.` : '⚠️ 일괄 삭제에 실패했어요.';
   }
   if(p.op==='update'){
     const c = p.changes;
