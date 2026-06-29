@@ -43,6 +43,8 @@ function pendingSummary(p){
   if(p.op==='create') return `추가: ${fmtEvent(p.event)}`;
   if(p.op==='delete') return `삭제: ${p.summary}`;
   if(p.op==='update') return `수정: ${p.summary}`;
+  if(p.op==='site_add') return `현장 추가 (진행상태: 제안)\n${fmtSite(p.site)}`;
+  if(p.op==='site_status') return `현장 상태 변경: ${p.summary} → ${p.status}`;
   return '';
 }
 function fmtEvent(e){
@@ -111,12 +113,19 @@ async function handleAsync(utterance, key){
   if(!pending && (action==='confirm'||action==='cancel')) action='chat';
 
   let reply;
+  // 대기 중 같은 종류의 수정(create/site) 요청이면 대기 일정에 병합
+  const reviseSite = pending && pending.op==='site_add' && (action==='site_add' || action==='revise');
+  const reviseCreate = pending && pending.op==='create' && (action==='revise' || action==='create' || action==='update');
+
   if(pending && action==='confirm'){ reply = await execPending(pending); clearPending(key); }
   else if(pending && action==='cancel'){ clearPending(key); reply = '알겠어요, 취소했어요. 😊'; }
-  else if(pending && (action==='revise' || (pending.op==='create' && (action==='create'||action==='update')))){
-    reply = await revisePending(pending, intent, key);
+  else if(reviseCreate){ reply = await revisePending(pending, intent, key); }
+  else if(reviseSite){ reply = await reviseSitePending(pending, intent, key); }
+  else if(pending && (action==='chat' || action==='calendar' || action==='gmail' || action==='drive' || action==='sheet')){
+    // 대기 중인데 못 알아들은 말/엉뚱한 말 → 대기를 깨지 말고 다시 확인 요청
+    reply = `방금 건 잘 못 알아들었어요. 🤔 아래 내용으로 진행할까요?\n\n${pendingSummary(pending)}\n\n"응"이면 진행, "취소"면 취소할게요.`;
   }
-  else if(action==='create'||action==='update'||action==='delete'){ reply = await prepareWrite({...intent, action}, key); }
+  else if(action==='create'||action==='update'||action==='delete'){ clearPending(key); reply = await prepareWrite({...intent, action}, key); }
   else if(action==='site_add'||action==='site_status'){ clearPending(key); reply = await prepareSite({...intent, action}, key); }
   else if(action==='chat'){ clearPending(key); reply = await chat(utterance, history); }
   else { clearPending(key); const gas = await fetchGas({...intent, action}); reply = await summarize(utterance, gas, history); }
@@ -133,7 +142,7 @@ async function parseIntent(utterance, history, pending){
   const pendingBlock = pending
     ? `[대기 중 작업] 방금 사용자에게 이걸 확인 요청했어 → ${pendingSummary(pending)}
 사용자 답을 이렇게 분류해:
-- 긍정(응/네/맞아/그래/좋아/그대로 진행/해줘) → action="confirm"
+- 긍정(응/네/맞아/그래/좋아/ㅇㅇ/그대로/그대로 진행/그러니까 해줘/추가해줘/등록해줘/진행해) → action="confirm"
 - 부정(아니/취소/안돼/하지마) → action="cancel"
 - 위 대기 일정의 제목·시간·날짜·분류·참석자를 바꾸자는 요청(예: "이름을 ~로 바꿔서", "3시로", "외근으로", "박성범도 추가") → action="revise" 로 하고, event에 '바꿀 값만' 채워. (기존 일정을 새로 검색하는 update가 아님!)
 - 위 일정과 전혀 무관한 새 요청 → 그 요청대로.`
@@ -218,6 +227,14 @@ function fmtSite(st){
   add('설계', st.design); add('설치공사', st.install); add('앱셋팅', st.appset);
   add('특이사항', st.note);
   return L.join('\n');
+}
+
+async function reviseSitePending(pending, intent, key){
+  const e = pending.site || {};
+  const n = intent.site || {};
+  const merged = Object.assign({}, e);
+  Object.keys(n).forEach(k=>{ if(n[k]!=null) merged[k]=n[k]; });
+  return prepareSite({ action:'site_add', site: merged }, key);
 }
 
 async function prepareSite(intent, key){
