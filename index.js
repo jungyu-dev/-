@@ -158,7 +158,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"startDate":null,"installDate":null,"endDate":null,"proposer":null,"fieldMgr":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"quote":null,"saleMonth":null,"orderCode":null,"query":null,"status":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"spaceType":null,"area":null,"firstContact":null,"quoteDate":null,"startDate":null,"firstSurvey":null,"installDate":null,"endDate":null,"proposer":null,"fieldMgr":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"quote":null,"saleMonth":null,"orderCode":null,"query":null,"status":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -170,7 +170,7 @@ ${historyText(history)}
 [drive] driveName=파일명에서 찾을 핵심 단어/문구(폴더 위치 무시, 부분일치). 예) "스마트홈 표준계약서 찾아줘"→driveName="표준계약서". 파일종류까지 좁혀야 할 때만 driveQuery=Drive검색식(mimeType 등). 보통은 driveName만 채우고 driveQuery는 null.
 [sheet] keyword=시트 이름 핵심 단어.
 [현장리스트 시트] '현장리스트'에 현장을 다루면:
-- 새 현장 추가 → action="site_add". site에 말한 항목만 채워: address(현장주소·필수), vendor(인테리어 업체명), proposer(아카라 제안담당), fieldMgr(아카라 현장담당), startDate/installDate/endDate(착수·설치예정·종료예정일 yyyy-mm-dd), custName/custTel(고객성함·연락처), siteLead/siteLeadTel(현장책임·연락처), quote(예상견적), saleMonth(예상매출월), note(특이사항), design/install/appset(설계·설치·앱셋팅). 진행상태·현장코드는 서버가 자동(제안/빈칸)이니 넣지 마.
+- 새 현장 추가 → action="site_add". site에 말한 항목만 채워: address(현장주소·필수), vendor(인테리어 업체명), proposer(아카라 영업담당), fieldMgr(현장담당 정), spaceType(유형: 아파트/단독주택/오피스/상가/공공기관), area(공급면적 평수 숫자), firstContact(인입일=최초접촉일 yyyy-mm-dd), quoteDate(가견적 제안일 yyyy-mm-dd), startDate(계약일 yyyy-mm-dd), firstSurvey(실사일 yyyy-mm-dd), installDate(조명설치예정일 yyyy-mm-dd), custName/custTel(고객성함·연락처), siteLead/siteLeadTel(현장소장·연락처), note(특이사항). 진행상태는 서버가 자동(제안)이니 넣지 마.
 - 현장 상태 변경 → action="site_status". site.query=현장 찾을 말(주소+업체명, 예: "테라디자인 베른"), site.status=제안|진행중|완료|취소.
 [중요·날짜기준] '오늘/내일/어제/모레/이번주/다음주/요일'은 모두 위에 적힌 오늘 날짜(Asia/Seoul) 기준으로 정확히 환산해.
 [event] create/update/delete일 때: title=제목, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지, "기본"이면 "기본", 없으면 null). target=기존 일정 찾을 제목 키워드.
@@ -195,7 +195,7 @@ ${historyText(history)}
       action: ok.includes(o.action)?o.action:'chat',
       from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
       event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], findDate:c(ev.findDate), findDateTo:c(ev.findDateTo), target:c(ev.target) },
-      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','startDate','installDate','endDate','proposer','fieldMgr','custName','custTel','siteLead','siteLeadTel','quote','saleMonth','orderCode','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
+      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','spaceType','area','firstContact','quoteDate','startDate','firstSurvey','installDate','endDate','proposer','fieldMgr','custName','custTel','siteLead','siteLeadTel','quote','saleMonth','orderCode','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
     };
   }catch{ return { action:'chat', event:{}, site:{} }; }
 }
@@ -226,13 +226,13 @@ async function revisePending(pending, intent, key){
 function fmtSite(st){
   const L = [];
   const add=(label,v)=>{ if(v) L.push(`• ${label}: ${v}`); };
-  add('현장주소', st.address); add('인테리어 업체명', st.vendor);
-  add('아카라 제안담당', st.proposer); add('아카라 현장담당', st.fieldMgr);
-  add('착수일', st.startDate); add('설치예정일', st.installDate); add('종료예정일', st.endDate);
+  add('현장주소', st.address); add('유형', st.spaceType); add('공급면적(평)', st.area);
+  add('인테리어 업체명', st.vendor);
+  add('아카라 영업담당', st.proposer); add('현장담당(정)', st.fieldMgr);
+  add('인입일', st.firstContact); add('가견적 제안일', st.quoteDate);
+  add('계약일', st.startDate); add('실사일', st.firstSurvey); add('설치예정일', st.installDate);
   add('고객성함', st.custName); add('고객연락처', st.custTel);
-  add('현장책임', st.siteLead); add('현장책임 연락처', st.siteLeadTel);
-  add('예상견적', st.quote); add('예상매출월', st.saleMonth);
-  add('설계', st.design); add('설치공사', st.install); add('앱셋팅', st.appset);
+  add('현장소장', st.siteLead); add('소장 연락처', st.siteLeadTel);
   add('특이사항', st.note);
   return L.join('\n');
 }
