@@ -111,6 +111,15 @@ app.post('/gchat', async (req,res)=>{
 async function handleAsync(utterance, key){
   const history = getHistory(key);
   const pending = getPending(key);
+
+  // 현장 되묻기(site_ask) 진행 중이면 짧은 답을 해당 칸 값으로 바로 처리 (인텐트 분류 생략)
+  if(pending && pending.op==='site_ask'){
+    const reply = await handleSiteAsk(pending, utterance, key);
+    pushHistory(key,'user',utterance);
+    pushHistory(key,'assistant',reply);
+    return reply;
+  }
+
   const intent = await parseIntent(utterance, history, pending);
   let action = intent.action;
   if(!pending && (action==='confirm'||action==='cancel')) action='chat';
@@ -241,19 +250,112 @@ function fmtSite(st){
 }
 
 async function reviseSitePending(pending, intent, key){
-  const e = pending.site || {};
+  const merged = Object.assign({}, pending.site || {});
   const n = intent.site || {};
-  const merged = Object.assign({}, e);
   Object.keys(n).forEach(k=>{ if(n[k]!=null) merged[k]=n[k]; });
-  return prepareSite({ action:'site_add', site: merged }, key);
+  // 확인 카드에서의 수정 → 되묻기 다시 돌리지 않고 카드만 갱신
+  setPending(key, { op:'site_add', site: merged });
+  return `이렇게 바꿔서 추가할게요 👇\n📋 현장리스트 (진행상태: 제안)\n${fmtSite(merged)}\n\n맞으면 "응", 아니면 "취소".`;
+}
+
+/* ===== 현장 되묻기(순차 질문) =====
+ * 새 현장 추가 시 '비어 있는 칸'만 아래 순서대로 하나씩 물어봄.
+ * - "몰라/없어/패스/스킵" → 그 칸은 빈칸으로 두고 다음 질문 (값으로 안 박음)
+ * - "그만/끝/이대로" → 나머지 안 묻고 바로 확인 카드
+ * - "취소" → 현장 추가 자체를 취소
+ * 필요 없는 항목은 ASK_FIELDS에서 줄을 지우면 되고, 순서는 배열 순서대로.
+ */
+const ASK_FIELDS = [
+  { key:'spaceType',    q:'유형이 뭐예요? (아파트 / 단독주택 / 오피스 / 상가 / 공공기관)' },
+  { key:'area',         q:'공급면적은 몇 평이에요? (숫자만, 예: 34)' },
+  { key:'vendor',       q:'인테리어 업체는 어디예요?' },
+  { key:'proposer',     q:'아카라 영업담당은 누구예요?' },
+  { key:'fieldMgr',     q:'현장담당(정)은 누구예요?' },
+  { key:'fieldMgrSub',  q:'현장담당(부)는 누구예요? (없으면 "없어")' },
+  { key:'custName',     q:'고객 성함은요?' },
+  { key:'custTel',      q:'고객 연락처는요?' },
+  { key:'firstContact', q:'인입일(최초 접촉일)은 언제예요? (예: 오늘, 7월 3일)' },
+];
+const SITE_DATE_FIELDS = new Set(['firstContact','quoteDate','startDate','firstSurvey','installDate','endDate']);
+
+const SITE_CANCEL_RE = /^(취소|관둬|그만둬|안\s?해|안해|하지\s?마|없던)/;
+const SITE_DONE_RE   = /^(그만|끝|됐어|됐고|이대로|바로\s?추가|그냥\s?추가|여기까지|응$|네$|ㅇㅇ|맞아|그래|좋아)/;
+const SITE_SKIP_RE   = /^(몰라|모름|모르|없어|없음|없다|패스|스킵|skip|넘어|건너|나중|생략|다음)/i;
+
+// 다음으로 물어볼 빈 칸을 찾아 질문. 없으면 확인 카드.
+function askNextSiteField(site, key, fromIdx){
+  for(let i=(fromIdx||0); i<ASK_FIELDS.length; i++){
+    const f = ASK_FIELDS[i];
+    const v = site[f.key];
+    if(v==null || String(v).trim()===''){
+      setPending(key, { op:'site_ask', site, asking:f.key, askIdx:i });
+      return `📋 ${site.address}\n\n${f.q}\n(모르면 "몰라", 그만 물어보고 바로 추가하려면 "그만")`;
+    }
+  }
+  setPending(key, { op:'site_add', site });
+  return `이렇게 맨 위에 추가할게요 👇\n📋 현장리스트 (진행상태: 제안)\n${fmtSite(site)}\n\n맞으면 "응", 아니면 "취소".`;
+}
+
+// 한 칸 답을 값으로 정규화 (면적=숫자, 날짜=yyyy-mm-dd, 나머지=원문)
+async function normalizeSiteAnswer(fkey, raw){
+  const s = String(raw||'').trim();
+  if(!s) return null;
+  if(fkey==='area'){ const m = s.match(/\d+(\.\d+)?/); return m ? m[0] : s; }
+  if(SITE_DATE_FIELDS.has(fkey)) return await normDateKo(s);
+  return s;
+}
+async function normDateKo(raw){
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone:'Asia/Seoul' });
+  try{
+    const t = (await askAI(`오늘은 ${today} (Asia/Seoul). 다음 표현을 달력 날짜로 바꿔 yyyy-mm-dd 형식 한 줄만 출력해. 날짜로 해석 불가하면 null만 출력. 표현: "${raw}"`)).trim();
+    const m = t.match(/\d{4}-\d{2}-\d{2}/);
+    return m ? m[0] : null;
+  }catch{ return null; }
+}
+
+// 되묻기 진행 중 사용자의 짧은 답 처리
+async function handleSiteAsk(pending, utterance, key){
+  const site = Object.assign({}, pending.site || {});
+  const fkey = pending.asking;
+  const u = String(utterance||'').trim();
+
+  if(SITE_CANCEL_RE.test(u)){ clearPending(key); return '알겠어요, 현장 추가를 취소했어요. 😊'; }
+
+  // 주소는 필수 → 스킵 불가
+  if(fkey==='address'){
+    if(!u || u==='-' || u==='.' || SITE_SKIP_RE.test(u)){
+      setPending(key, { op:'site_ask', site, asking:'address', askIdx:-1 });
+      return '현장주소는 꼭 필요해요. 📍 주소를 알려주세요. (그만두려면 "취소")';
+    }
+    site.address = u;
+    return askNextSiteField(site, key, 0);
+  }
+
+  const idx = (typeof pending.askIdx==='number') ? pending.askIdx : 0;
+
+  // "그만/이대로" → 나머지 안 묻고 바로 확인 카드
+  if(SITE_DONE_RE.test(u)){
+    setPending(key, { op:'site_add', site });
+    return `그럼 여기까지만 채워서 추가할게요 👇\n📋 현장리스트 (진행상태: 제안)\n${fmtSite(site)}\n\n맞으면 "응", 아니면 "취소".`;
+  }
+  // "몰라/없어/패스" → 이 칸 빈칸 유지, 다음 칸으로 (값으로 안 박음)
+  if(u==='-' || u==='.' || SITE_SKIP_RE.test(u)){
+    return askNextSiteField(site, key, idx+1);
+  }
+  // 실제 값 → 정규화 후 채우고 다음 칸으로
+  const val = await normalizeSiteAnswer(fkey, u);
+  if(val!=null && String(val).trim()!=='') site[fkey] = val;
+  return askNextSiteField(site, key, idx+1);
 }
 
 async function prepareSite(intent, key){
   const st = intent.site || {};
   if(intent.action==='site_add'){
-    if(!st.address) return '새 현장은 현장주소부터 알려주세요. 📍 (주소를 넣으면 진행상태는 자동으로 "제안"이 돼요)';
-    setPending(key, { op:'site_add', site: st });
-    return `이렇게 맨 위에 추가할게요 👇\n📋 현장리스트 (진행상태: 제안)\n${fmtSite(st)}\n\n맞으면 "응", 아니면 "취소".`;
+    if(!st.address){
+      setPending(key, { op:'site_ask', site: st, asking:'address', askIdx:-1 });
+      return '새 현장은 현장주소부터 알려주세요. 📍 (주소만 넣으면 진행상태는 자동으로 "제안"이 돼요)';
+    }
+    return askNextSiteField(st, key, 0);   // 유형·면적·담당 등 빈 칸을 하나씩 되물음
   }
   // site_status : 현장 찾기
   if(!st.query) return '어떤 현장의 상태를 바꿀까요? 주소나 업체명으로 알려주세요. (예: "테라디자인 베른 현장")';
