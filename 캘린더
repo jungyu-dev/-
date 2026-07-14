@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>스마트 인테리어 공정 캘린더</title>
+
+<!-- ===================================================================
+     ⚙️ 설정 — 여기 gasUrl 한 줄만 바꾸면 끝
+     GAS 웹앱 배포 URL(끝이 /exec)을 붙여넣으세요.
+     token은 읽기 전용(SCHEDULE_TOKEN)이라 노출돼도 안전합니다.
+=================================================================== -->
+<script>
+  const CONFIG = {
+    gasUrl: "https://script.google.com/macros/s/AKfycbw6h9aW068dg6jmMC2D35ptUTyEDMRZa-YkQg0ZVHRCEa1gjwAO4Ik8kXbFTy_-18om/exec",
+    token:  "cal_ro_7Hn2Kp9Wq4Zx"
+  };
+</script>
+
+<link rel="stylesheet" as="style" crossorigin
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales/ko.global.min.js"></script>
+
+<style>
+  :root{
+    --navy:#14305F; --navy-deep:#0E2244; --ink:#1B2333; --muted:#6B7688;
+    --line:#E4E8EF; --bg:#F5F7FA; --card:#FFFFFF;
+    --p1:#3E6DB5; --p2:#E08A2B; --p3:#C79A22; --p4:#7A5BC2; --p5:#2E9E6B;
+    --shadow:0 1px 2px rgba(16,32,64,.06), 0 8px 24px rgba(16,32,64,.06);
+    --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    font-family:"Pretendard Variable",Pretendard,-apple-system,system-ui,sans-serif;
+    background:var(--bg); color:var(--ink);
+    -webkit-font-smoothing:antialiased; letter-spacing:-0.01em;
+  }
+  .wrap{max-width:1180px; margin:0 auto; padding:22px 20px 60px;}
+
+  /* ── 헤더 ── */
+  header.top{
+    background:linear-gradient(180deg,var(--navy) 0%,var(--navy-deep) 100%);
+    color:#fff; border-radius:var(--radius); padding:20px 24px;
+    box-shadow:var(--shadow); position:relative; overflow:hidden;
+  }
+  header.top::after{ /* 은은한 격자 = 도면 느낌 */
+    content:""; position:absolute; inset:0; opacity:.10; pointer-events:none;
+    background-image:linear-gradient(#fff 1px,transparent 1px),linear-gradient(90deg,#fff 1px,transparent 1px);
+    background-size:26px 26px; mask:linear-gradient(90deg,transparent,#000 40%);
+  }
+  .brand{display:flex; align-items:center; gap:12px; position:relative;}
+  .brand .mark{
+    width:34px;height:34px;border-radius:9px;flex:none;
+    background:conic-gradient(from 210deg,var(--p1),var(--p2),var(--p3),var(--p5),var(--p4),var(--p1));
+    box-shadow:inset 0 0 0 4px var(--navy);
+  }
+  .brand h1{font-size:19px; font-weight:800; margin:0; letter-spacing:-0.02em;}
+  .brand .sub{font-size:12.5px; color:#B9C6DD; margin-top:2px; font-weight:500;}
+
+  /* ── 공정 파이프라인 (범례 겸 필터) = 시그니처 ── */
+  .pipeline{
+    display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+    margin-top:18px; position:relative;
+  }
+  .phase{
+    display:inline-flex; align-items:center; gap:7px;
+    background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18);
+    color:#fff; padding:7px 12px; border-radius:999px; cursor:pointer;
+    font-size:13px; font-weight:600; user-select:none; transition:.15s;
+  }
+  .phase:hover{background:rgba(255,255,255,.18);}
+  .phase .dot{width:10px;height:10px;border-radius:50%;flex:none;}
+  .phase[aria-pressed="false"]{opacity:.38; text-decoration:line-through; text-decoration-thickness:1px;}
+  .arrow{color:#9FB0CC;opacity:.7;font-size:12px;}
+
+  /* ── 툴바 ── */
+  .toolbar{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    margin:20px 2px 12px; flex-wrap:wrap;
+  }
+  .nav{display:flex; align-items:center; gap:8px;}
+  .btn{
+    border:1px solid var(--line); background:var(--card); color:var(--ink);
+    height:38px; padding:0 14px; border-radius:10px; font:inherit; font-weight:600;
+    font-size:14px; cursor:pointer; display:inline-flex; align-items:center; gap:6px;
+    transition:.12s;
+  }
+  .btn:hover{border-color:#C4CDDB; background:#FBFCFE;}
+  .btn.icon{width:38px;padding:0;justify-content:center;font-size:17px;}
+  .btn.primary{background:var(--navy); color:#fff; border-color:var(--navy);}
+  .btn.primary:hover{background:#1B3E76;}
+  #title{font-size:20px; font-weight:800; letter-spacing:-0.02em; min-width:150px;}
+  .seg{display:inline-flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--card);}
+  .seg button{border:0;background:transparent;height:38px;padding:0 14px;font:inherit;font-weight:600;font-size:14px;cursor:pointer;color:var(--muted);}
+  .seg button.on{background:var(--navy);color:#fff;}
+
+  /* ── 캘린더 카드 ── */
+  .calcard{background:var(--card); border-radius:var(--radius); box-shadow:var(--shadow); padding:12px 14px 16px; position:relative; min-height:520px;}
+
+  /* FullCalendar 톤 조정 */
+  .fc{--fc-border-color:var(--line); --fc-today-bg-color:#F0F5FF; --fc-page-bg-color:transparent;}
+  .fc .fc-scrollgrid{border-radius:10px; overflow:hidden;}
+  .fc .fc-col-header-cell-cushion{color:var(--muted); font-weight:700; font-size:12.5px; padding:10px 4px;}
+  .fc .fc-daygrid-day-number{color:var(--ink); font-weight:600; font-size:13px; padding:6px 8px;}
+  .fc .fc-day-other .fc-daygrid-day-number{color:#B7C0CF;}
+  .fc .fc-day-sat .fc-daygrid-day-number{color:#3E6DB5;}
+  .fc .fc-day-sun .fc-daygrid-day-number{color:#C0453B;}
+  .fc-event{border:none!important; border-radius:6px!important; padding:1px 2px; font-weight:600; font-size:12px; cursor:pointer;}
+  .fc-event:hover{filter:brightness(.94);}
+  .fc .fc-daygrid-event-harness{margin-top:2px;}
+  .fc-h-event .fc-event-title{padding:1px 3px;}
+  .fc .fc-more-link{font-weight:700;color:var(--navy);font-size:11.5px;}
+
+  /* ── 상태 오버레이 ── */
+  .overlay{position:absolute; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; gap:14px; background:rgba(255,255,255,.7); backdrop-filter:blur(2px); border-radius:var(--radius); text-align:center; padding:24px;}
+  .overlay.show{display:flex;}
+  .spinner{width:34px;height:34px;border-radius:50%;border:3px solid #DCE3EE;border-top-color:var(--navy);animation:spin .8s linear infinite;}
+  #refIcon{display:inline-block;font-size:15px;}
+  #refIcon.spinning{animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .overlay .msg{color:var(--muted); font-size:14.5px; font-weight:600; max-width:440px; line-height:1.55;}
+  .overlay .msg b{color:var(--ink);}
+  .overlay code{background:#EEF2F8;padding:2px 7px;border-radius:6px;font-size:12.5px;}
+
+  /* ── 이벤트 팝오버 ── */
+  .pop{position:fixed; z-index:50; display:none; background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 12px 40px rgba(16,32,64,.18); padding:14px 16px; width:260px;}
+  .pop.show{display:block;}
+  .pop .site{font-weight:800; font-size:15px; margin-bottom:8px; line-height:1.35;}
+  .pop .row{display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); margin:5px 0;}
+  .pop .row .k{color:var(--muted); width:44px; flex:none;}
+  .pop .pill{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:12px;padding:3px 9px;border-radius:999px;color:#fff;}
+  .pop .stat{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:#EAF3EC;color:#2E9E6B;}
+  .pop .stat.wip{background:#EAF0FA;color:#3E6DB5;}
+  .footnote{color:var(--muted); font-size:12px; text-align:center; margin-top:14px;}
+
+  @media (max-width:640px){
+    .wrap{padding:14px 12px 40px;}
+    #title{font-size:17px;min-width:110px;}
+    .btn{height:36px;padding:0 11px;font-size:13px;}
+    .phase{padding:6px 10px;font-size:12px;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"></div>
+      <div>
+        <h1>스마트 인테리어 공정 캘린더</h1>
+        <div class="sub">현장별 공정 일정을 한눈에 · 아카라라이프</div>
+      </div>
+    </div>
+    <div class="pipeline" id="pipeline" role="group" aria-label="공정 필터"></div>
+  </header>
+
+  <div class="toolbar">
+    <div class="nav">
+      <button class="btn" id="btnToday">오늘</button>
+      <button class="btn icon" id="btnPrev" aria-label="이전">‹</button>
+      <button class="btn icon" id="btnNext" aria-label="다음">›</button>
+      <span id="title"></span>
+    </div>
+    <div class="seg" id="viewSeg">
+      <button data-view="dayGridMonth" class="on">월</button>
+      <button data-view="dayGridWeek">주</button>
+      <button data-view="listMonth">목록</button>
+    </div>
+    <button class="btn" id="btnRefresh" title="지금 새로고침">
+      <span id="refIcon">↻</span> 새로고침
+    </button>
+    <span id="updated" style="color:var(--muted);font-size:12.5px;font-weight:600;"></span>
+  </div>
+
+  <div class="calcard">
+    <div id="calendar"></div>
+    <div class="overlay" id="overlay">
+      <div class="spinner" id="spin"></div>
+      <div class="msg" id="ovmsg">일정을 불러오는 중…</div>
+      <button class="btn primary" id="retry" style="display:none">다시 시도</button>
+    </div>
+  </div>
+
+  <div class="footnote">진행중·완료 현장의 공정일만 표시합니다. (취소·제안 제외) · 실시간 시트 연동</div>
+</div>
+
+<div class="pop" id="pop"></div>
+
+<script>
+/* ── 공정 정의 (실제 시공 순서) ── */
+const PHASES = [
+  { key:"실사",     label:"실사",     color:"#3E6DB5", text:"#fff" },
+  { key:"배선",     label:"전기배선", color:"#E08A2B", text:"#fff" },
+  { key:"조명설치", label:"조명설치", color:"#C79A22", text:"#1B2333" },
+  { key:"SW세팅",   label:"SW세팅",   color:"#7A5BC2", text:"#fff" },
+  { key:"검수인계", label:"검수·인계", color:"#2E9E6B", text:"#fff" },
+];
+const PMAP = Object.fromEntries(PHASES.map(p => [p.key, p]));
+const active = new Set(PHASES.map(p => p.key));   // 켜져 있는 공정
+
+let calendar, allEvents = [];
+
+/* ── 파이프라인(필터) 렌더 ── */
+const pipeEl = document.getElementById("pipeline");
+PHASES.forEach((p, i) => {
+  if (i) { const a = document.createElement("span"); a.className = "arrow"; a.textContent = "→"; pipeEl.appendChild(a); }
+  const b = document.createElement("button");
+  b.className = "phase"; b.setAttribute("aria-pressed", "true");
+  b.innerHTML = `<span class="dot" style="background:${p.color}"></span>${p.label}`;
+  b.onclick = () => {
+    const on = b.getAttribute("aria-pressed") === "true";
+    b.setAttribute("aria-pressed", String(!on));
+    on ? active.delete(p.key) : active.add(p.key);
+    applyFilter();
+  };
+  pipeEl.appendChild(b);
+});
+
+/* ── 캘린더 초기화 ── */
+document.addEventListener("DOMContentLoaded", () => {
+  calendar = new FullCalendar.Calendar(document.getElementById("calendar"), {
+    initialView: "dayGridMonth",
+    locale: "ko",
+    height: "auto",
+    headerToolbar: false,
+    dayMaxEvents: 4,
+    fixedWeekCount: false,
+    displayEventTime: false,
+    eventClick: showPopover,
+    datesSet: () => { document.getElementById("title").textContent = calendar.view.title; },
+  });
+  calendar.render();
+  wireToolbar();
+  loadData();
+
+  // 10분마다 조용히 자동 갱신 (탭이 보일 때만)
+  setInterval(() => { if (!document.hidden) loadData(true); }, 10 * 60 * 1000);
+  // 탭을 다시 볼 때도 최신으로
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) loadData(true); });
+});
+
+function wireToolbar(){
+  document.getElementById("btnToday").onclick = () => calendar.today();
+  document.getElementById("btnPrev").onclick  = () => calendar.prev();
+  document.getElementById("btnNext").onclick  = () => calendar.next();
+  document.getElementById("btnRefresh").onclick = () => loadData(true);
+  document.querySelectorAll("#viewSeg button").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll("#viewSeg button").forEach(x => x.classList.remove("on"));
+      b.classList.add("on");
+      calendar.changeView(b.dataset.view);
+    };
+  });
+}
+
+/* ── 데이터 로드 (JSONP) ──
+   silent=true : 배경 새로고침 (오버레이 없이 데이터만 조용히 교체) */
+function loadData(silent){
+  if (!CONFIG.gasUrl || CONFIG.gasUrl.indexOf("PASTE_") === 0){
+    overlay(true, "설정이 필요해요. 이 파일 상단 <code>CONFIG.gasUrl</code> 에 GAS 웹앱 배포 URL(<b>…/exec</b>)을 넣어주세요.", false);
+    return;
+  }
+  silent ? setSpin(true) : overlay(true, "일정을 불러오는 중…");
+  jsonp(`${CONFIG.gasUrl}?action=schedule&token=${encodeURIComponent(CONFIG.token)}`)
+    .then(res => {
+      const rows = (res && res.result) || [];
+      allEvents = rows.map(e => ({
+        title: e.site,
+        start: e.date,
+        allDay: true,
+        backgroundColor: (PMAP[e.phase]||{}).color || "#8894A8",
+        textColor: (PMAP[e.phase]||{}).text || "#fff",
+        extendedProps: { phase: e.phase, site: e.site, status: e.status, date: e.date },
+      }));
+      overlay(false); setSpin(false); stampUpdated();
+      applyFilter();
+      if (!allEvents.length && !silent) overlay(true, "표시할 공정 일정이 없어요. 시트의 실사·배선·조명설치·SW세팅·검수인계 날짜를 채우면 여기 나타납니다.", false);
+    })
+    .catch(err => {
+      setSpin(false);
+      if (silent) { markStale(); }   // 배경 새로고침 실패 → 기존 화면 유지
+      else overlay(true, "일정을 불러오지 못했어요. GAS URL과 웹앱 배포(액세스: 모든 사용자)를 확인해 주세요.<br><span style='color:#9AA5B5;font-size:12px'>" + (err.message||"") + "</span>", true);
+    });
+}
+function setSpin(on){
+  const ic = document.getElementById("refIcon"), b = document.getElementById("btnRefresh");
+  if (ic) ic.classList.toggle("spinning", !!on);
+  if (b) b.disabled = !!on;
+}
+function stampUpdated(){
+  const t = new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"});
+  const el = document.getElementById("updated");
+  if (el){ el.textContent = "업데이트 " + t; el.style.color = "var(--muted)"; }
+}
+function markStale(){
+  const el = document.getElementById("updated");
+  if (el){ el.textContent = "갱신 실패 · 이전 데이터"; el.style.color = "#C0453B"; }
+}
+
+function applyFilter(){
+  if (!calendar) return;
+  calendar.removeAllEvents();
+  allEvents.filter(e => active.has(e.extendedProps.phase)).forEach(e => calendar.addEvent(e));
+}
+
+/* ── 이벤트 팝오버 ── */
+function showPopover(info){
+  info.jsEvent.preventDefault();
+  info.jsEvent.stopPropagation();   // 여는 클릭이 '바깥 클릭 닫기'로 새지 않게
+  const ep = info.event.extendedProps;
+  const p = PMAP[ep.phase] || { color:"#8894A8", label:ep.phase };
+  const done = /완료/.test(ep.status);
+  const pop = document.getElementById("pop");
+  pop.innerHTML = `
+    <div class="site">${escapeHtml(ep.site)}</div>
+    <div class="row"><span class="k">공정</span>
+      <span class="pill" style="background:${p.color};color:${p.text||'#fff'}"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:${p.text==='#1B2333'?'#1B2333':'#fff'};opacity:.6"></span>${p.label}</span></div>
+    <div class="row"><span class="k">날짜</span><b>${ep.date}</b></div>
+    <div class="row"><span class="k">상태</span><span class="stat ${done?'':'wip'}">${escapeHtml(ep.status)}</span></div>`;
+  const r = info.el.getBoundingClientRect();
+  pop.style.display = "block";
+  const pw = 260, ph = pop.offsetHeight;
+  let x = r.left, y = r.bottom + 8;
+  if (x + pw > innerWidth - 10) x = innerWidth - pw - 10;
+  if (y + ph > innerHeight - 10) y = r.top - ph - 8;
+  pop.style.left = Math.max(10, x) + "px";
+  pop.style.top  = Math.max(10, y) + "px";
+  pop.classList.add("show");
+}
+function hidePop(){ document.getElementById("pop").classList.remove("show"); }
+// 팝오버 바깥을 클릭하면 닫기 (이벤트 클릭은 showPopover에서 전파 차단됨)
+document.addEventListener("click", (e) => {
+  const pop = document.getElementById("pop");
+  if (pop.classList.contains("show") && !pop.contains(e.target)) hidePop();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hidePop(); });   // ESC로 닫기
+window.addEventListener("scroll", hidePop, true);                                      // 스크롤하면 닫기
+
+/* ── 유틸 ── */
+function overlay(show, msg, retry){
+  const o = document.getElementById("overlay");
+  document.getElementById("spin").style.display = (show && msg && msg.indexOf("불러오는 중")>=0) ? "block":"none";
+  document.getElementById("retry").style.display = retry ? "inline-flex":"none";
+  document.getElementById("retry").onclick = loadData;
+  if (msg) document.getElementById("ovmsg").innerHTML = msg;
+  o.classList.toggle("show", !!show);
+}
+function jsonp(url){
+  return new Promise((resolve, reject) => {
+    const cb = "cb_" + Math.random().toString(36).slice(2);
+    const s = document.createElement("script");
+    const timer = setTimeout(() => { cleanup(); reject(new Error("시간 초과")); }, 15000);
+    function cleanup(){ clearTimeout(timer); delete window[cb]; s.remove(); }
+    window[cb] = (data) => { cleanup(); resolve(data); };
+    s.onerror = () => { cleanup(); reject(new Error("네트워크 오류")); };
+    s.src = url + "&callback=" + cb;
+    document.head.appendChild(s);
+  });
+}
+function escapeHtml(s){ return String(s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+</script>
+</body>
+</html>
