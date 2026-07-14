@@ -78,8 +78,45 @@
   /* ── 툴바 ── */
   .toolbar{
     display:flex; align-items:center; justify-content:space-between; gap:12px;
-    margin:20px 2px 12px; flex-wrap:wrap;
+    margin:18px 2px 12px; flex-wrap:wrap;
   }
+  .tools{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+  #updated{color:var(--muted); font-size:12.5px; font-weight:600; white-space:nowrap;}
+  .mgr-select{
+    height:38px; border:1px solid var(--line); background:var(--card); color:var(--ink);
+    border-radius:10px; padding:0 32px 0 12px; font:inherit; font-weight:600; font-size:14px;
+    cursor:pointer; -webkit-appearance:none; appearance:none;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236B7688' stroke-width='3'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:right 11px center;
+  }
+  .mgr-select:hover{border-color:#C4CDDB;}
+
+  /* ── 다가오는 공정 카드 ── */
+  .upcoming{
+    background:var(--card); border:1px solid var(--line); border-left:5px solid var(--p2);
+    border-radius:12px; box-shadow:var(--shadow); padding:14px 18px; margin-top:16px;
+  }
+  .upcoming h2{font-size:14px; font-weight:800; margin:0 0 10px; color:var(--ink); display:flex; align-items:center; gap:8px;}
+  .upcoming h2 .bell{font-size:16px;}
+  .upcoming h2 .count{background:var(--p2); color:#fff; font-size:12px; padding:1px 9px; border-radius:999px; font-weight:800;}
+  .up-list{display:flex; flex-wrap:wrap; gap:8px;}
+  .up-item{
+    display:flex; align-items:center; gap:9px; background:#FBFCFE; border:1px solid var(--line);
+    border-radius:10px; padding:8px 12px; font-size:13px; min-width:0;
+  }
+  .up-item .when{font-weight:800; color:var(--navy); white-space:nowrap;}
+  .up-item .dday{font-size:11px; font-weight:800; color:#fff; background:var(--p5); border-radius:6px; padding:1px 6px;}
+  .up-item .dday.soon{background:#C0453B;}
+  .up-item .ph{display:inline-flex; align-items:center; gap:6px; font-weight:700;}
+  .up-item .ph .dot{width:9px;height:9px;border-radius:50%;}
+  .up-item .nm{color:var(--muted); font-weight:600;}
+  .upcoming .empty{color:var(--muted); font-size:13px; font-weight:600;}
+
+  /* ── 완료 현장 = 흐리게 + 체크 ── */
+  .fc-event.done{opacity:.5;}
+  .fc-event.done .fc-event-title::before{content:"✓ "; font-weight:800;}
+  .fc-list-event.done{opacity:.5;}
+  .fc-list-event.done .fc-list-event-title a::before{content:"✓ ";}
   .nav{display:flex; align-items:center; gap:8px;}
   .btn{
     border:1px solid var(--line); background:var(--card); color:var(--ink);
@@ -127,7 +164,9 @@
   /* ── 이벤트 팝오버 ── */
   .pop{position:fixed; z-index:50; display:none; background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 12px 40px rgba(16,32,64,.18); padding:14px 16px; width:260px;}
   .pop.show{display:block;}
-  .pop .site{font-weight:800; font-size:15px; margin-bottom:8px; line-height:1.35;}
+  .pop .site{font-weight:800; font-size:15px; margin-bottom:8px; line-height:1.35; padding-right:20px;}
+  .popclose{position:absolute; top:8px; right:10px; border:none; background:transparent; color:var(--muted); font-size:20px; line-height:1; cursor:pointer; padding:2px 4px; border-radius:6px;}
+  .popclose:hover{background:#F0F2F6; color:var(--ink);}
   .pop .row{display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); margin:5px 0;}
   .pop .row .k{color:var(--muted); width:44px; flex:none;}
   .pop .pill{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:12px;padding:3px 9px;border-radius:999px;color:#fff;}
@@ -137,9 +176,21 @@
 
   @media (max-width:640px){
     .wrap{padding:14px 12px 40px;}
-    #title{font-size:17px;min-width:110px;}
+    #title{font-size:16px;min-width:auto;}
     .btn{height:36px;padding:0 11px;font-size:13px;}
     .phase{padding:6px 10px;font-size:12px;}
+    .arrow{display:none;}                       /* 좁은 화면에선 화살표 숨김 */
+    .toolbar{gap:10px;}
+    .nav{width:100%; justify-content:space-between;}
+    .tools{width:100%; justify-content:space-between;}
+    .mgr-select{flex:1; min-width:0;}
+    .seg button{padding:0 11px;}
+    #updated{width:100%; text-align:right;}
+    .up-item{width:100%;}                        /* 다가오는 공정 한 줄씩 */
+    .fc-event{font-size:11px;}
+    .fc .fc-daygrid-day-number{font-size:12px;padding:4px 6px;}
+    .calcard{padding:8px 8px 12px;}
+    .pop{width:calc(100vw - 24px); max-width:300px;}
   }
 </style>
 </head>
@@ -157,6 +208,8 @@
     <div class="pipeline" id="pipeline" role="group" aria-label="공정 필터"></div>
   </header>
 
+  <div id="upcoming" class="upcoming" hidden></div>
+
   <div class="toolbar">
     <div class="nav">
       <button class="btn" id="btnToday">오늘</button>
@@ -164,15 +217,20 @@
       <button class="btn icon" id="btnNext" aria-label="다음">›</button>
       <span id="title"></span>
     </div>
-    <div class="seg" id="viewSeg">
-      <button data-view="dayGridMonth" class="on">월</button>
-      <button data-view="dayGridWeek">주</button>
-      <button data-view="listMonth">목록</button>
+    <div class="tools">
+      <select id="mgrFilter" class="mgr-select" aria-label="담당자 필터">
+        <option value="">담당자 전체</option>
+      </select>
+      <div class="seg" id="viewSeg">
+        <button data-view="dayGridMonth" class="on">월</button>
+        <button data-view="dayGridWeek">주</button>
+        <button data-view="listMonth">목록</button>
+      </div>
+      <button class="btn" id="btnRefresh" title="지금 새로고침">
+        <span id="refIcon">↻</span> 새로고침
+      </button>
+      <span id="updated"></span>
     </div>
-    <button class="btn" id="btnRefresh" title="지금 새로고침">
-      <span id="refIcon">↻</span> 새로고침
-    </button>
-    <span id="updated" style="color:var(--muted);font-size:12.5px;font-weight:600;"></span>
   </div>
 
   <div class="calcard">
@@ -184,7 +242,7 @@
     </div>
   </div>
 
-  <div class="footnote">진행중·완료 현장의 공정일만 표시합니다. (취소·제안 제외) · 실시간 시트 연동 · <b>v3</b></div>
+  <div class="footnote">진행중·완료 현장의 공정일만 표시합니다. (취소·제안 제외) · 실시간 시트 연동 · <b>v5</b></div>
 </div>
 
 <div class="pop" id="pop"></div>
@@ -222,7 +280,7 @@ PHASES.forEach((p, i) => {
 /* ── 캘린더 초기화 ── */
 document.addEventListener("DOMContentLoaded", () => {
   calendar = new FullCalendar.Calendar(document.getElementById("calendar"), {
-    initialView: "dayGridMonth",
+    initialView: window.matchMedia("(max-width:640px)").matches ? "listMonth" : "dayGridMonth",
     locale: "ko",
     height: "auto",
     headerToolbar: false,
@@ -230,7 +288,11 @@ document.addEventListener("DOMContentLoaded", () => {
     fixedWeekCount: false,
     displayEventTime: false,
     eventClick: showPopover,
-    datesSet: () => { document.getElementById("title").textContent = calendar.view.title; },
+    datesSet: () => {
+      document.getElementById("title").textContent = calendar.view.title;
+      const vt = calendar.view.type;
+      document.querySelectorAll("#viewSeg button").forEach(b => b.classList.toggle("on", b.dataset.view === vt));
+    },
   });
   calendar.render();
   wireToolbar();
@@ -247,6 +309,7 @@ function wireToolbar(){
   document.getElementById("btnPrev").onclick  = () => calendar.prev();
   document.getElementById("btnNext").onclick  = () => calendar.next();
   document.getElementById("btnRefresh").onclick = () => loadData(true);
+  document.getElementById("mgrFilter").onchange = (e) => { selectedMgr = e.target.value; applyFilter(); renderUpcoming(); };
   document.querySelectorAll("#viewSeg button").forEach(b => {
     b.onclick = () => {
       document.querySelectorAll("#viewSeg button").forEach(x => x.classList.remove("on"));
@@ -273,10 +336,13 @@ function loadData(silent){
         allDay: true,
         backgroundColor: (PMAP[e.phase]||{}).color || "#8894A8",
         textColor: (PMAP[e.phase]||{}).text || "#fff",
-        extendedProps: { phase: e.phase, site: e.site, status: e.status, date: e.date },
+        classNames: /완료/.test(e.status) ? ["done"] : [],   // 완료 현장 → 흐리게+✓
+        extendedProps: { phase: e.phase, site: e.site, status: e.status, date: e.date, mgr: e.mgr||"", mgrSub: e.mgrSub||"" },
       }));
       overlay(false); setSpin(false); stampUpdated();
+      populateMgr();
       applyFilter();
+      renderUpcoming();
       if (!allEvents.length && !silent) overlay(true, "표시할 공정 일정이 없어요. 시트의 실사·배선·조명설치·SW세팅·검수인계 날짜를 채우면 여기 나타납니다.", false);
     })
     .catch(err => {
@@ -300,10 +366,56 @@ function markStale(){
   if (el){ el.textContent = "갱신 실패 · 이전 데이터"; el.style.color = "#C0453B"; }
 }
 
+let selectedMgr = "";
 function applyFilter(){
   if (!calendar) return;
   calendar.removeAllEvents();
-  allEvents.filter(e => active.has(e.extendedProps.phase)).forEach(e => calendar.addEvent(e));
+  allEvents
+    .filter(e => active.has(e.extendedProps.phase))
+    .filter(e => !selectedMgr || e.extendedProps.mgr === selectedMgr || e.extendedProps.mgrSub === selectedMgr)
+    .forEach(e => calendar.addEvent(e));
+}
+
+// 담당자(정·부) 목록으로 필터 옵션 채우기
+function populateMgr(){
+  const set = new Set();
+  allEvents.forEach(e => { const {mgr,mgrSub}=e.extendedProps; if(mgr) set.add(mgr); if(mgrSub) set.add(mgrSub); });
+  const names = [...set].sort();
+  const sel = document.getElementById("mgrFilter");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">담당자 전체</option>' + names.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+  if (names.includes(cur)) { sel.value = cur; } else { selectedMgr = ""; }
+}
+
+// 다가오는 공정 (오늘~3일 이내, 모든 공정 표시, 담당자 필터는 반영)
+function renderUpcoming(){
+  const el = document.getElementById("upcoming");
+  el.hidden = false;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const limit = new Date(today); limit.setDate(limit.getDate()+3);
+  const items = allEvents
+    .filter(e => !selectedMgr || e.extendedProps.mgr === selectedMgr || e.extendedProps.mgrSub === selectedMgr)
+    .map(e => Object.assign({}, e.extendedProps, { _d: new Date(e.extendedProps.date + "T00:00:00") }))
+    .filter(x => x._d >= today && x._d <= limit)
+    .sort((a,b) => a._d - b._d);
+  if (!items.length){
+    el.innerHTML = `<h2><span class="bell">🔔</span> 다가오는 공정 <span class="count">0</span></h2><div class="empty">3일 이내 예정된 공정이 없어요.</div>`;
+    return;
+  }
+  const rows = items.map(x => {
+    const p = PMAP[x.phase] || { color:"#8894A8", label:x.phase };
+    const diff = Math.round((x._d - today)/86400000);
+    const dday = diff===0 ? "오늘" : diff===1 ? "내일" : "D-"+diff;
+    const mgrTxt = [x.mgr, x.mgrSub].filter(Boolean).join(" / ");
+    return `<div class="up-item">
+      <span class="when">${(x._d.getMonth()+1)}/${x._d.getDate()}</span>
+      <span class="dday ${diff<=1?'soon':''}">${dday}</span>
+      <span class="ph"><span class="dot" style="background:${p.color}"></span>${p.label}</span>
+      <span>${escapeHtml(x.site)}</span>
+      ${mgrTxt?`<span class="nm">· ${escapeHtml(mgrTxt)}</span>`:""}
+    </div>`;
+  }).join("");
+  el.innerHTML = `<h2><span class="bell">🔔</span> 다가오는 공정 <span class="count">${items.length}</span> <span style="font-weight:600;color:var(--muted);font-size:12px;">· 오늘~3일 이내</span></h2><div class="up-list">${rows}</div>`;
 }
 
 /* ── 이벤트 팝오버 ── */
@@ -314,10 +426,12 @@ function showPopover(info){
   const done = /완료/.test(ep.status);
   const pop = document.getElementById("pop");
   pop.innerHTML = `
+    <button class="popclose" onclick="hidePop()" aria-label="닫기">×</button>
     <div class="site">${escapeHtml(ep.site)}</div>
     <div class="row"><span class="k">공정</span>
       <span class="pill" style="background:${p.color};color:${p.text||'#fff'}"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:${p.text==='#1B2333'?'#1B2333':'#fff'};opacity:.6"></span>${p.label}</span></div>
     <div class="row"><span class="k">날짜</span><b>${ep.date}</b></div>
+    <div class="row"><span class="k">담당</span><b>${escapeHtml([ep.mgr, ep.mgrSub].filter(Boolean).join(" / ") || "-")}</b></div>
     <div class="row"><span class="k">상태</span><span class="stat ${done?'':'wip'}">${escapeHtml(ep.status)}</span></div>`;
   const r = info.el.getBoundingClientRect();
   pop.style.display = "block";
@@ -329,7 +443,7 @@ function showPopover(info){
   pop.style.top  = Math.max(10, y) + "px";
   pop.classList.add("show");
 }
-function hidePop(){ document.getElementById("pop").classList.remove("show"); }
+function hidePop(){ const p = document.getElementById("pop"); p.classList.remove("show"); p.style.display = "none"; }
 // 팝오버가 열려있고, 누른 지점이 팝오버 '밖'이면 닫는다.
 // pointerdown+capture라 캘린더보다 먼저 실행 → 이벤트를 다시 누른 경우엔 닫혔다가 showPopover가 즉시 다시 띄움(깜빡임 없음).
 // 이벤트 종류(월/주/목록) 구분 없이 동작.
