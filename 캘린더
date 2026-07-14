@@ -309,7 +309,6 @@ function applyFilter(){
 /* ── 이벤트 팝오버 ── */
 function showPopover(info){
   info.jsEvent.preventDefault();
-  info.jsEvent.stopPropagation();   // 여는 클릭이 '바깥 클릭 닫기'로 새지 않게
   const ep = info.event.extendedProps;
   const p = PMAP[ep.phase] || { color:"#8894A8", label:ep.phase };
   const done = /완료/.test(ep.status);
@@ -331,11 +330,15 @@ function showPopover(info){
   pop.classList.add("show");
 }
 function hidePop(){ document.getElementById("pop").classList.remove("show"); }
-// 팝오버 바깥을 클릭하면 닫기 (이벤트 클릭은 showPopover에서 전파 차단됨)
-document.addEventListener("click", (e) => {
+// 팝오버가 열려있을 때, 팝오버 '바깥'에서 누르면 닫기.
+// pointerdown + capture(true) → FullCalendar가 클릭을 처리하기 '전에' 먼저 판단해서 확실히 동작.
+document.addEventListener("pointerdown", (e) => {
   const pop = document.getElementById("pop");
-  if (pop.classList.contains("show") && !pop.contains(e.target)) hidePop();
-});
+  if (!pop.classList.contains("show")) return;      // 안 열려있으면 무시
+  if (pop.contains(e.target)) return;               // 팝오버 내부 클릭 → 유지
+  if (e.target.closest && e.target.closest(".fc-event")) return; // 이벤트 클릭 → showPopover가 다시 띄움
+  hidePop();                                         // 그 외(빈 날짜칸 등) → 닫기
+}, true);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") hidePop(); });   // ESC로 닫기
 window.addEventListener("scroll", hidePop, true);                                      // 스크롤하면 닫기
 
