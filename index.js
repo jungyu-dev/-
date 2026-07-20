@@ -165,7 +165,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"spaceType":null,"area":null,"firstContact":null,"quoteDate":null,"startDate":null,"firstSurvey":null,"installDate":null,"endDate":null,"proposer":null,"fieldMgr":null,"fieldMgrSub":null,"route":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"quote":null,"saleMonth":null,"orderCode":null,"query":null,"status":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"spaceType":null,"area":null,"meetingDate":null,"startDate":null,"firstSurvey":null,"installDate":null,"endDate":null,"proposer":null,"fieldMgr":null,"fieldMgrSub":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"quote":null,"saleMonth":null,"orderCode":null,"query":null,"status":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -177,8 +177,7 @@ ${historyText(history)}
 [drive] driveName=파일명에서 찾을 핵심 단어/문구(폴더 위치 무시, 부분일치). 예) "스마트홈 표준계약서 찾아줘"→driveName="표준계약서". 파일종류까지 좁혀야 할 때만 driveQuery=Drive검색식(mimeType 등). 보통은 driveName만 채우고 driveQuery는 null.
 [sheet] keyword=시트 이름 핵심 단어.
 [현장리스트 시트] '현장리스트'에 현장을 다루면:
-- 새 현장 추가 → action="site_add". site에 말한 항목만 채워: address(현장주소·필수), vendor(인테리어 업체명), proposer(아카라 영업담당), fieldMgr(현장담당 정=주담당), fieldMgrSub(현장담당 부=보조담당), route(인입루트: 쇼룸/메일/소개 중 하나), spaceType(유형: 아파트/단독주택/오피스/상가/공공기관), area(공급면적 평수 숫자), firstContact(인입=최초접촉일 yyyy-mm-dd), quoteDate(가견적 제안일 yyyy-mm-dd), startDate(계약일 yyyy-mm-dd), firstSurvey(실사일 yyyy-mm-dd), installDate(조명설치예정일 yyyy-mm-dd), custName/custTel(고객성함·연락처), siteLead/siteLeadTel(현장소장·연락처), note(특이사항). 진행상태는 서버가 자동(제안)이니 넣지 마.
-  ★인입루트(route)는 반드시 "쇼룸","메일","소개" 셋 중 하나로만. (예: "쇼룸에서 왔어"→route="쇼룸", "소개받았어"→route="소개", "메일로 문의"→route="메일") 셋에 해당 안 되면 null.
+- 새 현장 추가 → action="site_add". site에 말한 항목만 채워: address(현장주소·필수), vendor(인테리어 업체명), proposer(아카라 영업담당), fieldMgr(현장담당 정=주담당), fieldMgrSub(현장담당 부=보조담당), spaceType(유형: 아파트/단독주택/오피스/상가/공공기관), area(공급면적 평수 숫자), meetingDate(3자미팅일 yyyy-mm-dd), startDate(계약일 yyyy-mm-dd), firstSurvey(실사일 yyyy-mm-dd), installDate(조명설치예정일 yyyy-mm-dd), custName/custTel(고객성함·연락처), siteLead/siteLeadTel(현장소장·연락처), note(특이사항). 진행상태는 서버가 자동(제안)이니 넣지 마.
   ★현장담당 정/부 구분(중요): "현장담당: 정 홍길동" 또는 "현장담당(정) 홍길동" → fieldMgr=홍길동. "현장담당(부): 김철수" 또는 "현장담당 보조 김철수" → fieldMgrSub=김철수. 절대 두 사람을 fieldMgr 하나에 몰아넣지 마. 부담당은 반드시 fieldMgrSub에만 넣어. 정/부 표시가 없이 이름 하나만 있으면 fieldMgr(정)로.
   ★현장 필드는 서버가 이름을 그대로 시트에 적어(이메일 변환 안 함). 그러니 사람 이름은 한글 이름 그대로 넣어.
 - 현장 상태 변경 → action="site_status". site.query=현장 찾을 말(주소+업체명, 예: "테라디자인 베른"), site.status=제안|진행중|완료|취소.
@@ -205,7 +204,7 @@ ${historyText(history)}
       action: ok.includes(o.action)?o.action:'chat',
       from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
       event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], findDate:c(ev.findDate), findDateTo:c(ev.findDateTo), target:c(ev.target) },
-      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','spaceType','area','route','firstContact','quoteDate','startDate','firstSurvey','installDate','endDate','proposer','fieldMgr','fieldMgrSub','custName','custTel','siteLead','siteLeadTel','quote','saleMonth','orderCode','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
+      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','spaceType','area','meetingDate','startDate','firstSurvey','installDate','endDate','proposer','fieldMgr','fieldMgrSub','custName','custTel','siteLead','siteLeadTel','quote','saleMonth','orderCode','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
     };
   }catch{ return { action:'chat', event:{}, site:{} }; }
 }
@@ -240,8 +239,7 @@ function fmtSite(st){
   add('인테리어 업체명', st.vendor);
   add('아카라 영업담당', st.proposer);
   add('현장담당(정)', st.fieldMgr); add('현장담당(부)', st.fieldMgrSub);
-  add('인입루트', st.route);
-  add('인입일', st.firstContact); add('가견적 제안일', st.quoteDate);
+  add('3자미팅일', st.meetingDate);
   add('계약일', st.startDate); add('실사일', st.firstSurvey); add('설치예정일', st.installDate);
   add('고객성함', st.custName); add('고객연락처', st.custTel);
   add('현장소장', st.siteLead); add('소장 연락처', st.siteLeadTel);
@@ -268,15 +266,12 @@ const ASK_FIELDS = [
   { key:'fieldMgrSub',  q:'현장담당(부)는 누구예요? (없으면 "없어")' },
   { key:'custName',     q:'고객 성함은요?' },
   { key:'custTel',      q:'고객 연락처는요?' },
-  { key:'route',        q:'인입루트는요? (쇼룸 / 메일 / 소개)' },
-  { key:'firstContact', q:'인입일(최초 접촉일)은 언제예요? (예: 오늘, 7월 3일)' },
+  { key:'meetingDate',  q:'3자미팅일은 언제예요? (예: 오늘, 7월 3일 / 없으면 "없어")' },
 ];
-// 인입루트 허용값 (시트 O열 드롭다운과 정확히 일치해야 함)
-const ROUTE_VALUES = ['쇼룸','메일','소개'];
 // 되묻기/확인카드 답을 필드 단위로 뽑을 때 허용하는 현장 필드 키
-const SITE_FIELD_KEYS = ['address','spaceType','area','vendor','proposer','fieldMgr','fieldMgrSub','route',
-  'custName','custTel','siteLead','siteLeadTel','firstContact','quoteDate','startDate','firstSurvey','installDate','note'];
-const SITE_DATE_FIELDS = new Set(['firstContact','quoteDate','startDate','firstSurvey','installDate']);
+const SITE_FIELD_KEYS = ['address','spaceType','area','vendor','proposer','fieldMgr','fieldMgrSub','meetingDate',
+  'custName','custTel','siteLead','siteLeadTel','startDate','firstSurvey','installDate','note'];
+const SITE_DATE_FIELDS = new Set(['meetingDate','startDate','firstSurvey','installDate']);
 // 확인 카드에서 순수 긍정(추가 진행). 전체가 이 말일 때만 매치 → "유형 아파트"는 매치 안 됨
 const SITE_CONFIRM_RE = /^(응|응응|넹|네|넵|예|어|엉|ㅇㅇ|ㅇ|오케이|오키|오케|ok|okay|콜|고|가자|맞아|맞아요|맞습니다|그래|그래요|좋아|좋아요|굿|그대로|그대로\s?진행|진행|진행해|진행해줘|추가|추가해|추가해줘|등록|등록해|등록해줘|해줘|해)$/i;
 
@@ -289,12 +284,11 @@ async function parseSiteReply(utterance, askingKey){
 사용자 답: "${utterance}"
 아래 규칙대로 JSON 한 줄만 출력(설명·코드블록 없이):
 {"site":{},"skip":[],"done":false,"cancel":false}
-[필드키] address(현장주소), spaceType(유형: 아파트/단독주택/오피스/상가/공공기관), area(공급면적 평수 숫자만), vendor(인테리어 업체), proposer(아카라 영업담당 이름), fieldMgr(현장담당 정=주 이름), fieldMgrSub(현장담당 부=보조 이름), route(인입루트: 쇼룸/메일/소개 중 하나), custName(고객성명), custTel(고객연락처), siteLead(현장소장), siteLeadTel(소장연락처), firstContact(인입일), quoteDate(가견적제안일), startDate(계약일), firstSurvey(실사일), installDate(조명설치예정일), note(특이사항)
+[필드키] address(현장주소), spaceType(유형: 아파트/단독주택/오피스/상가/공공기관), area(공급면적 평수 숫자만), vendor(인테리어 업체), proposer(아카라 영업담당 이름), fieldMgr(현장담당 정=주 이름), fieldMgrSub(현장담당 부=보조 이름), meetingDate(3자미팅일), custName(고객성명), custTel(고객연락처), siteLead(현장소장), siteLeadTel(소장연락처), startDate(계약일), firstSurvey(실사일), installDate(조명설치예정일), note(특이사항)
 [규칙]
 - 사용자가 말한 현장 정보를 site에 '해당 필드키'로 넣어. 한 번에 여러 개 말하면 전부 각 필드에 넣어.
 - "유형은 아파트", "면적 34평", "담당 정은 박성범"처럼 '필드명+값' 형태면 값만 뽑아 넣어(spaceType="아파트", area="34", fieldMgr="박성범").
 - 현장담당 '정/주'는 fieldMgr, '부/보조'는 fieldMgrSub. 절대 두 명을 한 필드에 몰지 마.
-- route(인입루트)는 반드시 "쇼룸","메일","소개" 셋 중 하나로만 넣어. ("쇼룸에서 봤대"→"쇼룸", "소개받음/지인소개"→"소개", "메일 문의"→"메일") 셋에 안 맞으면 넣지 마.
 - 어떤 항목을 "몰라/모름/없어/없음/패스/스킵/나중에/생략"이라고 하면 그 필드키를 skip 배열에 넣고 site엔 넣지 마. (예: "면적은 몰라"→skip:["area"])
 - 지금 물어본 항목("${askingKey||''}")에 대한 단순 값 답(예: "아파트")이면 그 항목 필드에 넣어.
 - "그만/끝/됐어/이대로/여기까지/바로 추가/그냥 추가"면 done=true.
@@ -310,8 +304,6 @@ async function parseSiteReply(utterance, askingKey){
       SITE_FIELD_KEYS.forEach(k=>{ const v=cln(o.site[k]); if(v!=null) site[k]=v; });
     }
     if(site.area){ const m=String(site.area).match(/\d+(\.\d+)?/); site.area = m?m[0]:site.area; }
-    // 인입루트 재검증: 허용값(쇼룸/메일/소개) 아니면 버림 (시트 드롭다운/COUNTIFS와 정확히 일치해야 함)
-    if(site.route && !ROUTE_VALUES.includes(site.route)) delete site.route;
     // 날짜 재검증: yyyy-mm-dd 아니면 버림(오입력 방지)
     SITE_DATE_FIELDS.forEach(k=>{ if(site[k] && !/^\d{4}-\d{2}-\d{2}$/.test(site[k])) delete site[k]; });
     const skip = Array.isArray(o.skip) ? o.skip.filter(k=>SITE_FIELD_KEYS.includes(k)) : [];
