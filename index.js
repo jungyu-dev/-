@@ -171,7 +171,7 @@ ${historyText(history)}
   ★현장 필드는 서버가 이름을 그대로 시트에 적어(이메일 변환 안 함). 그러니 사람 이름은 한글 이름 그대로 넣어.
 - 현장 상태 변경 → action="site_status". site.query=현장 찾을 말(주소+업체명, 예: "테라디자인 베른"), site.status=제안|진행중|완료|취소.
 [중요·날짜기준] '오늘/내일/어제/모레/이번주/다음주/요일'은 모두 위에 적힌 오늘 날짜(Asia/Seoul) 기준으로 정확히 환산해.
-[event] create/update/delete일 때: title=제목, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지/쇼룸/상현룸/성범룸/왕환룸, "기본"이면 "기본", 없으면 null). "○○룸에/에서 회의","쇼룸 예약"처럼 회의실을 지정하면 그 방 이름을 category로 넣어(예: "상현룸에 3시 회의"→category="상현룸"). target=기존 일정 찾을 제목 키워드.
+[event] create/update/delete일 때: title=제목, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. 장소·현장명이 언급되면 제목에 반드시 포함해(예: "안산 현장으로 외근 추가"→title="안산 현장 외근", "코리아빌드 참관 잡아줘"→title="코리아빌드 참관"). category=분류(내근/외근/손님/의사결정회의/공지/쇼룸/상현룸/성범룸/왕환룸, "기본"이면 "기본", 없으면 null). "○○룸에/에서 회의","쇼룸 예약"처럼 회의실을 지정하면 그 방 이름을 category로 넣어(예: "상현룸에 3시 회의"→category="상현룸"). target=기존 일정 찾을 제목 키워드.
   - date = '새로 바꿀(또는 추가할) 날짜' yyyy-mm-dd.
   - findDate = '기존 일정이 현재 있는 날짜' yyyy-mm-dd (update/delete에서 일정을 찾을 날짜). findDateTo = 찾을 범위 끝(여러 날 뒤져야 할 때).
   - 예) "내일 잡은 베른 감리를 수요일로 옮겨줘" → action=update, target="베른", findDate=(내일 날짜), date=(이번주 수요일 날짜).
@@ -407,6 +407,8 @@ async function prepareWrite(intent, key){
       const hit = CAT_KEYS.find(k=>hay.includes(k));
       if(hit) e.category = hit;
     }
+    // 제목 양식: 팀 관례 "이름 - 제목" (예: "준규 - 안산 현장 외근"). 이미 "누구 -"로 시작하면 그대로 둠
+    if(e.title && !/^[가-힣]{2,4}\s*[-–]/.test(e.title)) e.title = `준규 - ${e.title}`;
     if(!e.category) return `'${e.title}' (${e.date}${e.start?' '+e.start:''}) — 어디로 분류할까요? 📂\n내근 / 외근 / 손님 / 의사결정회의 / 공지·기타 / 기본\n회의실: 쇼룸 / 상현룸 / 성범룸 / 왕환룸 중에 골라주세요.`;
     setPending(key, { op:'create', event:e });
     return `이렇게 추가할게요 👇\n${fmtEvent(e)}\n\n맞으면 "응", 아니면 "취소"라고 해주세요.`;
