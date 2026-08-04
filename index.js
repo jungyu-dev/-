@@ -1,4 +1,4 @@
-/*** 카카오+슬랙+구글챗 비서 (Gemini · 검색 · 대화기억 · 캘린더 쓰기) ********
+/*** 카카오+구글챗 비서 (Gemini · 검색 · 대화기억 · 캘린더 쓰기) ********
  * 읽기: 일정/메일/드라이브/시트 조회
  * 쓰기: 일정 추가·수정·삭제 (실행 전 "이렇게 할게요?" 확인)
  * 기억/대기작업: 서버 메모리 (재시작 시 초기화)
@@ -86,17 +86,6 @@ app.post('/skill', (req,res)=>{
     .catch(async e=>{ console.error('[kakao]',e?.message||e); await sendKakao(ur.callbackUrl,'⚠️ 처리 중 오류가 났어요.').catch(()=>{});});
 });
 
-/* ===== 슬랙 ===== */
-app.post('/slack', (req,res)=>{
-  const text = req.body?.text || '';
-  const key = req.body?.user_id || null;
-  const url = req.body?.response_url;
-  res.json({ response_type:'ephemeral', text:'🤔 잠깐만요, 확인하고 있어요…' });
-  if(!url) return;
-  handleAsync(text,key).then(t=>postSlack(url,t))
-    .catch(async e=>{ console.error('[slack]',e?.message||e); await postSlack(url,'⚠️ 처리 중 오류가 났어요.').catch(()=>{});});
-});
-
 /* ===== 구글 챗 ===== */
 app.post('/gchat', async (req,res)=>{
   const ev = req.body || {};
@@ -182,7 +171,7 @@ ${historyText(history)}
   ★현장 필드는 서버가 이름을 그대로 시트에 적어(이메일 변환 안 함). 그러니 사람 이름은 한글 이름 그대로 넣어.
 - 현장 상태 변경 → action="site_status". site.query=현장 찾을 말(주소+업체명, 예: "테라디자인 베른"), site.status=제안|진행중|완료|취소.
 [중요·날짜기준] '오늘/내일/어제/모레/이번주/다음주/요일'은 모두 위에 적힌 오늘 날짜(Asia/Seoul) 기준으로 정확히 환산해.
-[event] create/update/delete일 때: title=제목, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지, "기본"이면 "기본", 없으면 null). target=기존 일정 찾을 제목 키워드.
+[event] create/update/delete일 때: title=제목, start/end="HH:mm"(24시간, 없으면 null), "종일"이면 allDay=true. category=분류(내근/외근/손님/의사결정회의/공지/쇼룸/상현룸/성범룸/왕환룸, "기본"이면 "기본", 없으면 null). "○○룸에/에서 회의","쇼룸 예약"처럼 회의실을 지정하면 그 방 이름을 category로 넣어(예: "상현룸에 3시 회의"→category="상현룸"). target=기존 일정 찾을 제목 키워드.
   - date = '새로 바꿀(또는 추가할) 날짜' yyyy-mm-dd.
   - findDate = '기존 일정이 현재 있는 날짜' yyyy-mm-dd (update/delete에서 일정을 찾을 날짜). findDateTo = 찾을 범위 끝(여러 날 뒤져야 할 때).
   - 예) "내일 잡은 베른 감리를 수요일로 옮겨줘" → action=update, target="베른", findDate=(내일 날짜), date=(이번주 수요일 날짜).
@@ -411,7 +400,7 @@ async function prepareWrite(intent, key){
     if(!e.title) return '무슨 일정을 추가할까요? 제목을 알려주세요. 📝';
     if(!e.date)  return `'${e.title}' 일정을 며칠에 추가할까요? 📅`;
     if(!e.allDay && !e.start) return `'${e.title}' (${e.date}) — 몇 시로 잡을까요? ⏰ 종일로 하려면 "종일"이라고 해주세요.`;
-    if(!e.category) return `'${e.title}' (${e.date}${e.start?' '+e.start:''}) — 어디로 분류할까요? 📂\n내근 / 외근 / 손님 / 의사결정회의 / 공지·기타 / 기본 중에 골라주세요.`;
+    if(!e.category) return `'${e.title}' (${e.date}${e.start?' '+e.start:''}) — 어디로 분류할까요? 📂\n내근 / 외근 / 손님 / 의사결정회의 / 공지·기타 / 기본\n회의실: 쇼룸 / 상현룸 / 성범룸 / 왕환룸 중에 골라주세요.`;
     setPending(key, { op:'create', event:e });
     return `이렇게 추가할게요 👇\n${fmtEvent(e)}\n\n맞으면 "응", 아니면 "취소"라고 해주세요.`;
   }
@@ -540,9 +529,6 @@ async function summarize(utterance, gas, history){
 /* ===== 출구 ===== */
 async function sendKakao(callbackUrl, text){
   await axios.post(callbackUrl, { version:'2.0', template:{ outputs:[{ simpleText:{ text } }] } }, { timeout:10000 });
-}
-async function postSlack(url, text){
-  await axios.post(url, { response_type:'ephemeral', text }, { timeout:10000 });
 }
 
 const PORT = process.env.PORT || 3000;
