@@ -400,6 +400,13 @@ async function prepareWrite(intent, key){
     if(!e.title) return '무슨 일정을 추가할까요? 제목을 알려주세요. 📝';
     if(!e.date)  return `'${e.title}' 일정을 며칠에 추가할까요? 📅`;
     if(!e.allDay && !e.start) return `'${e.title}' (${e.date}) — 몇 시로 잡을까요? ⏰ 종일로 하려면 "종일"이라고 해주세요.`;
+    // 분류 자동 추론: 제목이나 발화에 분류/회의실 키워드가 있으면 안 묻고 채움 (예: "외근 일정 추가해줘")
+    if(!e.category){
+      const hay = `${e.title||''} ${intent._utterance||''}`;
+      const CAT_KEYS = ['의사결정회의','내근','외근','손님','공지','쇼룸','상현룸','성범룸','왕환룸'];
+      const hit = CAT_KEYS.find(k=>hay.includes(k));
+      if(hit) e.category = hit;
+    }
     if(!e.category) return `'${e.title}' (${e.date}${e.start?' '+e.start:''}) — 어디로 분류할까요? 📂\n내근 / 외근 / 손님 / 의사결정회의 / 공지·기타 / 기본\n회의실: 쇼룸 / 상현룸 / 성범룸 / 왕환룸 중에 골라주세요.`;
     setPending(key, { op:'create', event:e });
     return `이렇게 추가할게요 👇\n${fmtEvent(e)}\n\n맞으면 "응", 아니면 "취소"라고 해주세요.`;
