@@ -3,6 +3,10 @@
  * 쓰기: 일정 추가·수정·삭제 (실행 전 "이렇게 할게요?" 확인)
  * 기억/대기작업: 서버 메모리 (재시작 시 초기화)
  * Render 환경변수: GAS_URL, GAS_TOKEN, GEMINI_API_KEY, (선택) GEMINI_MODEL
+ *
+ * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
+ *   - 감리시트(본진) 28열 구조에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
+ *   - fmtSite / SITE_FIELD_KEYS / ASK_FIELDS 에는 원래부터 없었음 (파서에만 남아있던 잔재).
  *********************************************************************/
 import express from 'express';
 import axios from 'axios';
@@ -154,7 +158,7 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"spaceType":null,"area":null,"meetingDate":null,"startDate":null,"firstSurvey":null,"installDate":null,"endDate":null,"proposer":null,"fieldMgr":null,"fieldMgrSub":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"quote":null,"saleMonth":null,"orderCode":null,"query":null,"status":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"spaceType":null,"area":null,"meetingDate":null,"startDate":null,"firstSurvey":null,"installDate":null,"proposer":null,"fieldMgr":null,"fieldMgrSub":null,"custName":null,"custTel":null,"siteLead":null,"siteLeadTel":null,"query":null,"status":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
@@ -193,7 +197,7 @@ ${historyText(history)}
       action: ok.includes(o.action)?o.action:'chat',
       from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
       event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], findDate:c(ev.findDate), findDateTo:c(ev.findDateTo), target:c(ev.target) },
-      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','spaceType','area','meetingDate','startDate','firstSurvey','installDate','endDate','proposer','fieldMgr','fieldMgrSub','custName','custTel','siteLead','siteLeadTel','quote','saleMonth','orderCode','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
+      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','spaceType','area','meetingDate','startDate','firstSurvey','installDate','proposer','fieldMgr','fieldMgrSub','custName','custTel','siteLead','siteLeadTel','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
     };
   }catch{ return { action:'chat', event:{}, site:{} }; }
 }
