@@ -333,7 +333,7 @@ function askNextSiteField(site, key, skipped){
 async function doSiteAdd(site, key){
   clearPending(key);
   const r = await gasCall(Object.assign({ action:'site_add' }, site));
-  return r?.result?.ok ? `✅ 현장을 추가했어요! (진행상태: 제안)\n${fmtSite(site)}` : '⚠️ 현장 추가에 실패했어요.';
+  return r?.result?.ok ? `✅ 현장을 추가했어요! (진행상태: 제안)\n${fmtSite(site)}` : gasFailure(r, '현장 추가를 완료하지 못했어요.');
 }
 
 /* 현장 추가 대화 처리 (site_ask 되묻기 + site_add 확인카드 공통) */
@@ -395,11 +395,16 @@ async function prepareSite(intent, key){
   if(!st.query) return '어떤 현장의 상태를 바꿀까요? 주소나 업체명으로 알려주세요. (예: "테라디자인 베른 현장")';
   if(!st.status) return '어떤 상태로 바꿀까요? 제안 / 진행중 / 완료 / 취소 중에 알려주세요.';
   const found = await gasCall({ action:'site_find', q: st.query });
-  const list = found?.result || [];
+  if (!Array.isArray(found?.result)) return gasFailure(found, '현장을 검색하지 못했어요.');
+  const list = found.result;
   if(!list.length) return `'${st.query}'에 맞는 현장을 못 찾았어요. 🔍 주소나 업체명을 더 구체적으로 알려주세요.`;
   if(list.length>1) return '해당 현장이 여러 개예요. 더 구체적으로 알려주세요.\n'+list.map(x=>`• ${x.code||'(코드없음)'} ${x.address} / ${x.vendor} [${x.status}]`).join('\n');
   const t = list[0];
-  setPending(key, { op:'site_status', row:t.row, status:st.status, summary:`${t.address} / ${t.vendor}` });
+  if (typeof t.siteRef !== 'string' || !t.siteRef) {
+    clearPending(key);
+    return '⚠️ 현장 확인 정보가 없어 상태를 변경할 수 없어요. Apps Script의 기존 웹앱 배포를 수정본의 새 버전으로 갱신한 뒤 현장을 다시 검색해 주세요.';
+  }
+  setPending(key, { op:'site_status', siteRef:t.siteRef, status:st.status, summary:`${t.address} / ${t.vendor}` });
   let extra = (st.status==='진행중'||st.status==='완료') && !t.code ? '\n(현장코드가 자동 생성돼요)' : '';
   return `이 현장 상태를 바꿀게요 👇\n📋 ${t.address} / ${t.vendor}\n${t.status} → ${st.status}${extra}\n\n맞으면 "응", 아니면 "취소".`;
 }
@@ -429,7 +434,9 @@ async function prepareWrite(intent, key){
   const todayStr = new Date().toLocaleDateString('sv-SE', { timeZone:'Asia/Seoul' });
   const fromDate = e.findDate || todayStr;
   const toDate = e.findDateTo || e.findDate || addDays(fromDate, 14); // 찾을 날짜 없으면 2주 범위
-  const found = await gasCalSearch(fromDate, e.target, toDate);
+  let found;
+  try { found = await gasCalSearch(fromDate, e.target, toDate); }
+  catch (err) { return `⚠️ 일정을 검색하지 못했어요.\n${err.message}`; }
   if(!found.length) return `'${e.target||''}' 일정을 ${e.findDate?e.findDate+'에서':'가까운 날짜에서'} 못 찾았어요. 🔍 일정이 며칠에 있는지 알려주시면 정확해요.`;
   if(found.length>1){
     // "둘 다 / 전부 / 모두 / 다" 같은 일괄 의사가 있으면 한 번에 처리
@@ -441,7 +448,7 @@ async function prepareWrite(intent, key){
         setPending(key,{ op:'delete_many', items, summary:`${found.length}개`, listTxt });
         return `아래 ${found.length}개를 전부 삭제할게요 👇\n${listTxt}\n\n맞으면 "응", 아니면 "취소".`;
       }
-      const changes = { title:e.title, date:e.date, start:e.start, end:e.end };
+      const changes = { title:e.title, date:e.date, start:e.start, end:e.end, allDay:e.allDay === true ? '1' : '' };
       setPending(key,{ op:'update_many', items, changes, summary:`${found.length}개`, listTxt });
       return `아래 ${found.length}개를 전부 이렇게 바꿀게요 👇\n${listTxt}\n→ 변경: ${fmtEvent({ title:e.title, date:e.date, start:e.start, end:e.end, allDay:e.allDay })}\n\n맞으면 "응", 아니면 "취소".`;
     }
@@ -452,7 +459,7 @@ async function prepareWrite(intent, key){
     setPending(key,{ op:'delete', id:t.id, calId:t.calId, summary:`${t.start} ${t.title}` });
     return `이 일정을 삭제할게요 👇\n🗑️ ${t.start} ${t.title}\n\n맞으면 "응", 아니면 "취소".`;
   }
-  const changes = { title:e.title, date:e.date, start:e.start, end:e.end };
+  const changes = { title:e.title, date:e.date, start:e.start, end:e.end, allDay:e.allDay === true ? '1' : '' };
   setPending(key,{ op:'update', id:t.id, calId:t.calId, changes, summary:`${t.start} ${t.title}` });
   return `이 일정을 이렇게 바꿀게요 👇\n기존: ${t.start} ${t.title}\n변경: ${fmtEvent({ title:e.title||t.title, date:e.date, start:e.start, end:e.end, allDay:e.allDay })}\n\n맞으면 "응", 아니면 "취소".`;
 }
@@ -461,44 +468,46 @@ async function execPending(p){
   if(p.op==='create'){
     const r = await gasCall({ action:'cal_create', title:p.event.title||'', date:p.event.date||'', start:p.event.start||'', end:p.event.end||'', allDay:p.event.allDay?'1':'', category:p.event.category||'', guests:(p.event.guests||[]).join(','), names:(p.event.names||[]).join(',') });
     const res = r?.result;
-    if(!res?.ok) return '⚠️ 추가에 실패했어요.';
+    if(!res?.ok) return gasFailure(r, '일정 추가를 완료하지 못했어요.');
     const ev2 = {...p.event, guests: res.guests||p.event.guests, names: []};
     let msg = `✅ 추가했어요!\n${fmtEvent(ev2)}`;
     const probs = [];
     if(res.notFound?.length) probs.push(`'${res.notFound.join(", ")}'은(는) 디렉터리에서 못 찾았어요`);
     if(res.ambiguous?.length) probs.push(`'${res.ambiguous.join(", ")}'은(는) 동명이인이 있어 못 정했어요`);
-    if(probs.length) msg += `\n⚠️ ${probs.join(' / ')} — 이메일로 알려주면 추가할게요.`;
+    if(res.failedGuests?.length) probs.push(`'${res.failedGuests.join(', ')}' 참석자 추가에 실패했어요`);
+    if(probs.length) msg += `\n⚠️ 일정은 만들어졌지만 ${probs.join(' / ')}. 캘린더에서 참석자를 확인해 주세요.`;
     return msg;
   }
   if(p.op==='delete'){
     const r = await gasCall({ action:'cal_delete', id:p.id, calId:p.calId||'' });
-    return r?.result?.ok ? `🗑️ 삭제했어요: ${p.summary}` : '⚠️ 삭제에 실패했어요.';
+    return r?.result?.ok ? `🗑️ 삭제했어요: ${p.summary}` : gasFailure(r, '일정 삭제를 완료하지 못했어요.');
   }
   if(p.op==='site_add'){
     const r = await gasCall(Object.assign({ action:'site_add' }, p.site));
-    return r?.result?.ok ? `✅ 현장을 추가했어요! (진행상태: 제안)\n${fmtSite(p.site)}` : '⚠️ 현장 추가에 실패했어요.';
+    return r?.result?.ok ? `✅ 현장을 추가했어요! (진행상태: 제안)\n${fmtSite(p.site)}` : gasFailure(r, '현장 추가를 완료하지 못했어요.');
   }
   if(p.op==='site_status'){
-    const r = await gasCall({ action:'site_status', row:p.row, status:p.status });
+    if (typeof p.siteRef !== 'string' || !p.siteRef) return '⚠️ 현장 확인 정보가 만료되었거나 이전 방식으로 저장되어 있어요. Apps Script를 수정본으로 갱신하고 현장을 다시 검색해 주세요.';
+    const r = await gasCall({ action:'site_status', siteRef:p.siteRef, status:p.status });
     const res = r?.result;
-    if(!res?.ok) return '⚠️ 상태 변경에 실패했어요.';
+    if(!res?.ok) return gasFailure(r, '상태 변경을 완료하지 못했어요.');
     let msg = `✅ 상태를 "${res.status}"로 바꿨어요: ${p.summary}`;
-    if(res.code) msg += `\n🏷️ 현장코드 자동 생성: ${res.code}`;
+    if(res.code) msg += `\n🏷️ 현장코드: ${res.code}`;
     return msg;
   }
   if(p.op==='update_many'){
     const c = p.changes;
-    const r = await gasCall({ action:'cal_update_many', items: JSON.stringify(p.items), title:c.title||'', date:c.date||'', start:c.start||'', end:c.end||'' });
-    return r?.result?.ok ? `✏️ ${r.result.count}개 일정을 수정했어요.` : '⚠️ 일괄 수정에 실패했어요.';
+    const r = await gasCall({ action:'cal_update_many', items: JSON.stringify(p.items), title:c.title||'', date:c.date||'', start:c.start||'', end:c.end||'', allDay:c.allDay||'' });
+    return calendarBatchReply(r, '수정');
   }
   if(p.op==='delete_many'){
     const r = await gasCall({ action:'cal_delete_many', items: JSON.stringify(p.items) });
-    return r?.result?.ok ? `🗑️ ${r.result.count}개 일정을 삭제했어요.` : '⚠️ 일괄 삭제에 실패했어요.';
+    return calendarBatchReply(r, '삭제');
   }
   if(p.op==='update'){
     const c = p.changes;
-    const r = await gasCall({ action:'cal_update', id:p.id, calId:p.calId||'', title:c.title||'', date:c.date||'', start:c.start||'', end:c.end||'' });
-    return r?.result?.ok ? `✏️ 수정했어요: ${p.summary}` : '⚠️ 수정에 실패했어요.';
+    const r = await gasCall({ action:'cal_update', id:p.id, calId:p.calId||'', title:c.title||'', date:c.date||'', start:c.start||'', end:c.end||'', allDay:c.allDay||'' });
+    return r?.result?.ok ? `✏️ 수정했어요: ${p.summary}` : gasFailure(r, '일정 수정을 완료하지 못했어요.');
   }
   return '⚠️ 알 수 없는 작업이에요.';
 }
@@ -513,15 +522,39 @@ async function chat(utterance, history){
 }
 
 /* ===== GAS 호출 ===== */
+function gasFailure(response, fallback){
+  const result = response?.result;
+  const reason = response?.error || result?.error;
+  let text = `⚠️ ${fallback}`;
+  if (result?.partial) text += ` 일부 변경${result.changed?.length ? `(${result.changed.join(', ')})` : ''}은 반영됐어요. 현재 내용을 확인해 주세요.`;
+  if (reason) text += `\n${String(reason)}`;
+  return text;
+}
+function calendarBatchReply(response, verb){
+  const result = response?.result;
+  if (!result || !Number.isInteger(result.count)) return gasFailure(response, `일정 일괄 ${verb}을 완료하지 못했어요.`);
+  if (result.ok) return `✅ ${result.count}개 일정을 ${verb}했어요.`;
+  const failed = Number.isInteger(result.failed) ? result.failed : (result.failures || []).length;
+  const reasons = [...new Set((result.failures || []).map(f=>f.error).filter(Boolean))];
+  return `⚠️ 일정 ${verb}: 완료 ${result.count}개 / 실패 ${failed}개.` +
+    ((result.failures || []).some(f=>f.partial) ? ' 실패한 일정 중 일부 항목이 변경된 일정이 있어요. 캘린더에서 확인해 주세요.' : '') +
+    (reasons.length ? `\n${reasons.join('\n')}` : '');
+}
 async function gasCall(extra){
   const clean = {}; Object.keys(extra||{}).forEach(k=>{ if(extra[k]!=null) clean[k]=extra[k]; });
   const params = new URLSearchParams({ token:GAS_TOKEN, ...clean });
-  const { data } = await axios.get(`${GAS_URL}?${params.toString()}`, { maxRedirects:5, timeout:20000 });
-  return data;
+  try {
+    const { data } = await axios.get(`${GAS_URL}?${params.toString()}`, { maxRedirects:5, timeout:20000 });
+    return data;
+  } catch (err) {
+    const writing = /^(site_add|site_status|cal_create|cal_update|cal_delete|cal_update_many|cal_delete_many)$/.test(extra?.action || '');
+    return { error: writing ? '서버 응답을 확인하지 못했습니다. 작업이 반영됐을 수 있으니 중복 요청 전에 시트나 캘린더를 확인해 주세요.' : '서버 응답을 확인하지 못했습니다. 잠시 후 다시 조회해 주세요.' };
+  }
 }
 async function gasCalSearch(date, keyword, dateTo){
   const d = await gasCall({ action:'cal_search', date:date||'', dateTo:dateTo||'', keyword:keyword||'' });
-  return d?.result || [];
+  if (!Array.isArray(d?.result)) throw new Error(d?.error || d?.result?.error || '일정 검색 응답을 확인할 수 없습니다.');
+  return d.result;
 }
 async function fetchGas(intent){
   const extra = { action:intent.action };
@@ -533,6 +566,7 @@ async function fetchGas(intent){
 }
 
 async function summarize(utterance, gas, history){
+  if (gas?.error || gas?.result?.error) return gasFailure(gas, '조회 요청을 완료하지 못했어요.');
   const prompt =
 `너는 준규 님의 업무 비서야. 아래 구글 데이터를 보고 메신저 말풍선용 한국어 브리핑을 써.
 [직전 대화] ${historyText(history)}
