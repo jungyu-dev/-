@@ -8,6 +8,7 @@
  * [2026-09-29c] 중복 확인 방지·같은 현장의 여러 공정 한 번 확인·응답 유실 시 현재 날짜 재조회.
  * [2026-09-29d] '3일 뒤/후' 공정 날짜·띄어 쓴 현장 리스트 인식 보완, 카카오톡 연결 제거.
  * [2026-09-29e] A열 현장코드는 수기 관리. 상태 변경 시 자동 발급 안내 제거.
+ * [2026-09-29f] 여러 공정 검색·재조회를 한 번에 처리하고 읽기 재시도는 기존 제한시간 안에서만 수행.
  *
  * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
  *   - 감리시트(본진)에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
@@ -31,7 +32,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
-const BOT_VERSION = '2026-09-29e';
+const BOT_VERSION = '2026-09-29f';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.5-flash' });
 
@@ -263,7 +264,7 @@ async function respondGoogleChatProgress(ev, text, key, res, receipt = {pending:
   entry.prepared = (async()=>{
     let uncertainProgress = false;
     try{
-      const created = await gchatApi('POST',`${space}/messages`,{text:'🤔 요청을 확인하고 있어요. 잠시만 기다려 주세요…'},{messageId});
+      const created = await gchatApi('POST',`${space}/messages`,{text:'✍️ 요청을 확인하고 있어요. 잠시만 기다려 주세요…'},{messageId});
       if(created){
         entry.progress = true;
         entry.acknowledged = true;
@@ -626,21 +627,13 @@ async function prepareSiteSchedule(intent, key){
     setPending(key, {op:'site_schedule_ask',query,changes,asking:'changes'});
     return `공정마다 바꿀 날짜를 하나씩 알려주세요. ${changes.filter(item=>!validSiteScheduleDate(item.date)).map(item=>item.phase).join('·')}의 날짜를 확인하기 전에는 일부만 변경하지 않아요.`;
   }
-  const found = await Promise.all(changes.map(change=>gasCall({action:'site_schedule_find',q:query,phase:change.phase})));
+  const found = await findSiteScheduleGroups(query, changes.map(change=>change.phase), {timeout:25000});
+  if(found.failure) return found.failure;
   const items = [];
   let target;
   let identity;
   for(let index=0;index<changes.length;index++){
-    const change = changes[index], response = found[index], list = response?.result;
-    if(response?.error || list?.error) return gasFailure(response,'체크리스트 현장을 검색하지 못했어요.');
-    if(response?.scheduleApiVersion !== 1){
-      return '⚠️ 비서에 연결된 Apps Script에서 공정일 API 버전을 확인하지 못했어요. Render의 GAS_URL과 새 버전으로 갱신한 웹앱 URL이 같은지 확인해 주세요.\n' + gasDeploymentHint();
-    }
-    if(changes.length > 1 && response?.scheduleBatchApiVersion !== 1) return '⚠️ 연결된 Apps Script에 여러 공정 날짜를 한 번에 변경하는 기능이 아직 적용되지 않았어요. 최신 수정본으로 기존 웹앱 배포를 갱신해 주세요.';
-    if(!Array.isArray(list) || list.some(row=>!row || typeof row.address !== 'string' || !row.address || typeof row.vendor !== 'string' || row.phase !== change.phase ||
-      typeof row.date !== 'string' || (row.date && !validSiteScheduleDate(row.date)) || typeof row.scheduleRef !== 'string' || !row.scheduleRef)){
-      return '⚠️ 공정일 API 연결은 확인됐지만 현장 검색 결과에 주소·공정·날짜·확인 정보가 누락되었거나 형식이 달라요. 체크리스트의 현장주소와 Apps Script 검색 응답을 확인해 주세요.';
-    }
+    const change = changes[index], list = found.groups[index].rows;
     if(!list.length) return `'${query}'에 맞는 현장을 체크리스트에서 찾지 못했어요. 주소나 업체명을 다시 알려주세요.`;
     if(list.length > 1){
       setPending(key,{op:'site_schedule_ask',query:'',phase,date,changes:changes.length > 1 ? changes : undefined,asking:'query'});
@@ -661,6 +654,31 @@ async function prepareSiteSchedule(intent, key){
   if(items.length === 1) setPending(key,{...base,op:'site_schedule',...items[0]});
   else setPending(key,{...base,op:'site_schedule_many',items});
   return `체크리스트 공정일을 이렇게 바꿀까요?\n📍 ${base.summary}\n${items.map(item=>`${item.phase}: ${item.oldDate || '미입력'} → ${item.date}`).join('\n')}\n\n맞으면 "응", 아니면 "취소"라고 해주세요.`;
+}
+
+/* 같은 현장의 여러 공정을 한 요청으로 조회한다. 옛 배포나 부분 응답은 카드로 만들지 않는다. */
+async function findSiteScheduleGroups(query, phases, options = {}){
+  const batch = phases.length > 1;
+  const response = await gasCall(batch
+    ? {action:'site_schedule_find_many',q:query,phases:JSON.stringify(phases)}
+    : {action:'site_schedule_find',q:query,phase:phases[0]}, options);
+  if(response?.error || response?.result?.error){
+    return {failure:gasFailure(response,'체크리스트 현장을 검색하지 못했어요.')};
+  }
+  if(response?.scheduleApiVersion !== 1){
+    return {failure:'⚠️ 비서에 연결된 Apps Script에서 공정일 API 버전을 확인하지 못했어요. Render의 GAS_URL과 새 버전으로 갱신한 웹앱 URL이 같은지 확인해 주세요.\n' + gasDeploymentHint()};
+  }
+  if(batch && (response.scheduleBatchApiVersion !== 1 || response.scheduleFindBatchApiVersion !== 1)){
+    return {failure:'⚠️ 연결된 Apps Script에서 여러 공정 날짜를 함께 조회하는 기능을 확인하지 못했어요. 최신 수정본으로 기존 웹앱 배포를 갱신해 주세요.'};
+  }
+  const groups = batch ? response.result : [{phase:phases[0],rows:response.result}];
+  if(!Array.isArray(groups) || groups.length !== phases.length || groups.some((group,index)=>
+    !group || group.phase !== phases[index] || !Array.isArray(group.rows) || group.rows.some(row=>
+      !row || typeof row.address !== 'string' || !row.address || typeof row.vendor !== 'string' || row.phase !== phases[index] ||
+      typeof row.date !== 'string' || (row.date && !validSiteScheduleDate(row.date)) || typeof row.scheduleRef !== 'string' || !row.scheduleRef))){
+    return {failure:'⚠️ 공정일 API 연결은 확인됐지만 현장 검색 결과에 주소·공정·날짜·확인 정보가 누락되었거나 형식이 달라요. 체크리스트의 현장주소와 Apps Script 검색 응답을 확인해 주세요.'};
+  }
+  return {groups};
 }
 
 /* 확인 대기 중인 일정에 '바꿀 값만' 반영하고 다시 확인 (검색 안 함) */
@@ -1080,17 +1098,22 @@ function uncertainGasWrite(response){
 }
 async function recheckSiteSchedule(p){
   const items = p.op === 'site_schedule_many' ? p.items : [p];
-  const checks = await Promise.all(items.map(async item=>{
+  const grouped = new Map();
+  items.forEach(item=>{
     const address = item.address || p.address;
-    const vendor = item.vendor ?? p.vendor;
-    if(!address) return {item,row:null};
-    const response = await gasCall({action:'site_schedule_find',q:address,phase:item.phase},{timeout:7000});
-    const rows = response?.result;
-    const row = response?.scheduleApiVersion === 1 && Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
-    const valid = row && row.address === address && (vendor == null || row.vendor === vendor) &&
-      row.phase === item.phase && typeof row.date === 'string' && (!row.date || validSiteScheduleDate(row.date));
-    return {item,row:valid ? row : null};
-  }));
+    if(!address) return;
+    if(!grouped.has(address)) grouped.set(address,[]);
+    const phases = grouped.get(address);
+    if(!phases.includes(item.phase)) phases.push(item.phase);
+  });
+  const observations = new Map(await Promise.all([...grouped].map(async ([address,phases])=>
+    [address,await findSiteScheduleGroups(address,phases,{timeout:7000})])));
+  const checks = items.map(item=>{
+    const address = item.address || p.address, vendor = item.vendor ?? p.vendor;
+    const rows = observations.get(address)?.groups?.find(group=>group.phase === item.phase)?.rows;
+    const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
+    return {item,row:row && row.address === address && (vendor == null || row.vendor === vendor) ? row : null};
+  });
   const allMatch = checks.length > 0 && checks.every(({item,row})=>row && row.date === item.date);
   const lines = checks.map(({item,row})=>row
     ? `• ${item.phase}: 현재 ${row.date || '미입력'}${row.date === item.date ? ' (요청한 날짜와 같음)' : ` / 요청 ${item.date}`}`
@@ -1104,16 +1127,41 @@ async function gasCall(extra, options = {}){
   if(!GAS_URL || !GAS_TOKEN) return {error:'Render 환경변수 GAS_URL과 GAS_TOKEN 설정을 확인해 주세요.',code:'GAS_CONFIG_MISSING'};
   const clean = {}; Object.keys(extra||{}).forEach(k=>{ if(extra[k]!=null) clean[k]=extra[k]; });
   const params = new URLSearchParams({ token:GAS_TOKEN, ...clean });
-  try {
-    const config = {maxRedirects:5,timeout:options.timeout || 20000};
-    const { data } = extra?.action === 'site_schedule_update_many'
-      ? await axios.post(GAS_URL.trim(),params.toString(),{...config,headers:{'Content-Type':'application/x-www-form-urlencoded'}})
-      : await axios.get(`${GAS_URL.trim()}?${params.toString()}`,config);
-    return decodeGasResponse(data, writing);
-  } catch (err) {
-    if(!writing && [401,403,404].includes(err?.response?.status)) return {error:`Apps Script 접근에 실패했어요 (HTTP ${err.response.status}). GAS_URL과 웹앱 배포의 접근 권한을 확인해 주세요.`,code:'GAS_ACCESS'};
-    return { code:writing ? 'GAS_WRITE_UNCERTAIN' : 'GAS_READ_FAILED', error: writing ? '서버 응답을 확인하지 못했습니다. 작업이 반영됐을 수 있으니 중복 요청 전에 시트나 캘린더를 확인해 주세요.' : '서버 응답을 확인하지 못했습니다. 잠시 후 다시 조회해 주세요.' };
+  const readable = ['calendar','gmail','drive','sheet','cal_search','site_find','site_schedule_find','site_schedule_find_many','site_code_policy'].includes(extra?.action);
+  const requestedTimeout = Number(options.timeout);
+  const maxBudget = /^site_schedule_find(?:_many)?$/.test(extra?.action || '') ? 25000 : 20000;
+  const budget = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? Math.min(requestedTimeout,maxBudget) : 20000;
+  const started = Date.now();
+  for(let attempt=0;attempt<2;attempt++){
+    try {
+      const config = {maxRedirects:5,timeout:attempt ? Math.max(1,budget - Math.max(0,Date.now()-started)) : budget};
+      const { data } = extra?.action === 'site_schedule_update_many'
+        ? await axios.post(GAS_URL.trim(),params.toString(),{...config,headers:{'Content-Type':'application/x-www-form-urlencoded'}})
+        : await axios.get(`${GAS_URL.trim()}?${params.toString()}`,config);
+      const decoded = decodeGasResponse(data, writing);
+      if(decoded?.code === 'GAS_NON_JSON' || decoded?.code === 'GAS_BAD_RESPONSE'){
+        logGasTransportFailure(extra?.action,{code:decoded.code},Date.now()-started);
+      }
+      return decoded;
+    } catch (err) {
+      const elapsed = Math.max(0,Date.now()-started);
+      logGasTransportFailure(extra?.action,err,elapsed);
+      // 조회 재시도도 같은 제한시간 안에서만 수행한다. 응답 유실 가능성이 있는 쓰기는 한 번만 보낸다.
+      if(!attempt && readable && options.retry !== false && !err?.response &&
+        ['ECONNABORTED','ETIMEDOUT','ECONNRESET'].includes(err?.code) && budget-elapsed >= 1000) continue;
+      if(!writing && [401,403,404].includes(err?.response?.status)) return {error:`Apps Script 접근에 실패했어요 (HTTP ${err.response.status}). GAS_URL과 웹앱 배포의 접근 권한을 확인해 주세요.`,code:'GAS_ACCESS'};
+      return { code:writing ? 'GAS_WRITE_UNCERTAIN' : 'GAS_READ_FAILED', error: writing ? '서버 응답을 확인하지 못했습니다. 작업이 반영됐을 수 있으니 중복 요청 전에 시트나 캘린더를 확인해 주세요.' : '서버 응답을 확인하지 못했습니다. 잠시 후 다시 조회해 주세요.' };
+    }
   }
+}
+function logGasTransportFailure(action, error, elapsed){
+  const actions = ['calendar','gmail','drive','sheet','cal_search','site_find','site_schedule_find','site_schedule_find_many',
+    'site_code_policy','site_add','site_status','site_schedule_update','site_schedule_update_many','cal_create','cal_update','cal_delete','cal_update_many','cal_delete_many'];
+  const codes = ['ECONNABORTED','ETIMEDOUT','ECONNRESET','ENOTFOUND','EAI_AGAIN','ERR_NETWORK','ERR_BAD_REQUEST','ERR_BAD_RESPONSE','GAS_NON_JSON','GAS_BAD_RESPONSE'];
+  const status = Number(error?.response?.status);
+  console.warn('[gas]',JSON.stringify({action:actions.includes(action) ? action : 'unknown',
+    status:Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0,
+    code:codes.includes(error?.code) ? error.code : 'UNKNOWN',elapsed:Math.max(0,Number(elapsed) || 0)}));
 }
 async function gasCalSearch(date, keyword, dateTo){
   const d = await gasCall({ action:'cal_search', date:date||'', dateTo:dateTo||'', keyword:keyword||'' });
