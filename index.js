@@ -4,6 +4,7 @@
  * 기억/대기작업: 서버 메모리 (재시작 시 초기화)
  * Render 환경변수: GAS_URL, GAS_TOKEN, GEMINI_API_KEY, (선택) GEMINI_MODEL
  * [2026-09-29a] 현장 공정 날짜는 체크리스트 검색·확인·단일 날짜 수정으로 처리.
+ * [2026-09-29b] GAS 연결 진단·현장리스트 표현 보완·선택형 구글챗 처리 중 표시.
  *
  * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
  *   - 감리시트(본진)에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
@@ -18,6 +19,8 @@
 import express from 'express';
 import axios from 'axios';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleAuth, OAuth2Client } from 'google-auth-library';
+import { createHash } from 'node:crypto';
 
 const app = express();
 app.use(express.json());
@@ -25,6 +28,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
+const BOT_VERSION = '2026-09-29b';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.5-flash' });
 
@@ -102,15 +106,187 @@ app.post('/skill', (req,res)=>{
 /* ===== 구글 챗 ===== */
 app.post('/gchat', async (req,res)=>{
   const ev = req.body || {};
+  const progressEnabled = process.env.GCHAT_PROGRESS_ENABLED === 'true';
+  if(progressEnabled && !await verifyGoogleChatRequest(req)) return res.status(401).json({error:'unauthorized'});
+  if(ev.type === 'REMOVED_FROM_SPACE') return res.json({});
   if(ev.type!=='MESSAGE') return res.json({ text:'안녕하세요! 일정·메일·드라이브·시트 조회와 일정 추가·수정·삭제를 도와드려요. 😊' });
   const key = ev.user?.name || ev.message?.sender?.name || null;
   const text = (ev.message?.text||'').replace(/^@\S+\s*/,'');
+  if(progressEnabled) return respondGoogleChatProgress(ev, text, key, res);
   try{ res.json({ text: await handleAsync(text,key) }); }
   catch(e){ console.error('[gchat]',e?.message||e); res.json({ text:'⚠️ 처리 중 오류가 났어요.' }); }
 });
 
+// 진행 표시는 Chat API 메시지다. 인증 설정 전에는 기존 동기 응답을 그대로 사용한다.
+const GCHAT_REQUESTS = new Map();
+const GCHAT_USER_QUEUES = new Map();
+let gchatVerifier;
+let gchatAuthClient;
+let gchatMissingCredentialsLogged = false;
+async function gchatWithin(promise, milliseconds){
+  let timer;
+  try{
+    return await Promise.race([promise,new Promise((_,reject)=>{
+      timer = setTimeout(()=>reject(new Error('Google Chat authentication timeout')),milliseconds);
+    })]);
+  }finally{ clearTimeout(timer); }
+}
+async function verifyGoogleChatRequest(req){
+  const authorization = req.headers?.authorization || '';
+  const token = /^Bearer\s+(\S+)$/i.exec(authorization)?.[1];
+  if(!token) return false;
+  try{
+    gchatVerifier ||= new OAuth2Client();
+    const ticket = await gchatWithin(gchatVerifier.verifyIdToken({idToken:token,
+      audience:process.env.GCHAT_AUDIENCE || 'https://kakaobiseo.onrender.com/gchat'}),5000);
+    const payload = ticket.getPayload();
+    return payload?.email_verified === true && payload.email === 'chat@system.gserviceaccount.com';
+  }catch{ return false; }
+}
+function gchatLogFailure(stage, error){
+  // 인증 헤더·키·사용자 문장이 담길 수 있는 SDK 오류 원문은 기록하지 않는다.
+  const status = Number(error?.response?.status);
+  console.warn(`[gchat-progress] ${stage}${Number.isInteger(status) && status > 0 ? ` (HTTP ${status})` : ''}`);
+}
+async function gchatAccessToken(){
+  if(!process.env.GOOGLE_APPLICATION_CREDENTIALS){
+    if(!gchatMissingCredentialsLogged){
+      console.warn('[gchat-progress] GOOGLE_APPLICATION_CREDENTIALS 미설정 — 기존 동기 응답 사용');
+      gchatMissingCredentialsLogged = true;
+    }
+    return null;
+  }
+  try{
+    gchatAuthClient ||= new GoogleAuth({scopes:['https://www.googleapis.com/auth/chat.bot']}).getClient();
+    const client = await gchatAuthClient;
+    const result = await client.getAccessToken();
+    const token = typeof result === 'string' ? result : result?.token;
+    if(!token) throw new Error('missing access token');
+    return token;
+  }catch(error){ gchatAuthClient = undefined; throw error; }
+}
+async function gchatApi(method, resource, body, params){
+  let token;
+  try{ token = await gchatWithin(gchatAccessToken(),5000); }
+  catch{
+    const error = new Error('Google Chat credentials unavailable');
+    error.gchatBeforeSend = true;
+    throw error;
+  }
+  if(!token) return null;
+  return axios.request({method,url:`https://chat.googleapis.com/v1/${resource}`,
+    headers:{Authorization:`Bearer ${token}`}, data:body, params, timeout:6000});
+}
+function queueGoogleChatUser(key, work){
+  const previous = GCHAT_USER_QUEUES.get(key) || Promise.resolve();
+  const job = previous.catch(()=>{}).then(work);
+  GCHAT_USER_QUEUES.set(key, job);
+  job.finally(()=>{ if(GCHAT_USER_QUEUES.get(key) === job) GCHAT_USER_QUEUES.delete(key); }).catch(()=>{});
+  return job;
+}
+async function finishGoogleChatProgress(messageName, reply, space, messageId){
+  for(let attempt=0; attempt<2; attempt++){
+    try{
+      const result = await gchatApi('PATCH', messageName, {text:reply}, {updateMask:'text'});
+      if(result) return true;
+    }catch(error){ gchatLogFailure('답변 메시지 갱신 실패', error); }
+  }
+  // 답변 전달만 다시 시도한다. 현장/일정 처리 함수를 재실행하지 않는다.
+  try{
+    const result = await gchatApi('POST', `${space}/messages`, {text:reply}, {messageId:`${messageId}-result`});
+    if(result){
+      // 최종 답변을 별도로 보냈다면 남은 '확인 중' 메시지를 정리한다.
+      try{ await gchatApi('DELETE',messageName); }
+      catch(error){ if(error?.response?.status !== 404) gchatLogFailure('최종 답변 전달됨 — 이전 진행 메시지 정리 실패',error); }
+      return true;
+    }
+  }catch(error){ gchatLogFailure('최종 답변 별도 전달 실패 — 요청을 자동 재실행하지 않음', error); }
+  return false;
+}
+async function respondGoogleChatProgress(ev, text, key, res){
+  const space = ev.space?.name || ev.message?.space?.name;
+  const source = ev.message?.name;
+  if(typeof space !== 'string' || !/^spaces\/[A-Za-z0-9_-]+$/.test(space) ||
+    typeof source !== 'string' || !source.startsWith(`${space}/messages/`) ||
+    !/^[A-Za-z0-9_.-]+$/.test(source.slice(`${space}/messages/`.length)) ||
+    typeof key !== 'string' || !/^users\/[A-Za-z0-9_-]+$/.test(key)){
+    return res.json({text:'대화 정보를 확인하지 못했어요. 비서와의 개인 대화에서 다시 요청해 주세요.'});
+  }
+  for(const [id, entry] of GCHAT_REQUESTS){
+    if(entry.done && Date.now()-entry.ts > 30*60*1000) GCHAT_REQUESTS.delete(id);
+  }
+  const duplicate = GCHAT_REQUESTS.get(source);
+  if(duplicate){
+    if(duplicate.done && duplicate.progress && duplicate.deliveryFailed && !duplicate.deliveryRecoveryAttempted){
+      duplicate.deliveryRecoveryAttempted = true;
+      res.json({});
+      // Google의 재전달은 업무 재실행이 아니라 저장된 답변의 전달 복구에만 쓴다.
+      duplicate.deliveryFailed = !await finishGoogleChatProgress(duplicate.messageName,duplicate.reply,space,duplicate.messageId);
+      return;
+    }
+    if(duplicate.acknowledged) return res.json({});
+    await duplicate.prepared;
+    if(duplicate.acknowledged) return res.json({});
+    const reply = await duplicate.job;
+    return res.json(duplicate.acknowledged ? {} : {text:reply});
+  }
+  const messageId = 'client-' + createHash('sha256').update(source).digest('hex').slice(0,40);
+  const messageName = `${space}/messages/${messageId}`;
+  const entry = {ts:Date.now(),done:false,progress:false,acknowledged:false,job:null,prepared:null,
+    reply:'',deliveryFailed:false,deliveryRecoveryAttempted:false,messageName,messageId};
+  GCHAT_REQUESTS.set(source,entry);
+  // 앞 요청의 처리를 기다리는 요청도 먼저 접수 표시를 보낸다. 업무 처리 순서는 아래 큐가 지킨다.
+  entry.prepared = (async()=>{
+    let uncertainProgress = false;
+    try{
+      const created = await gchatApi('POST',`${space}/messages`,{text:'🤔 요청을 확인하고 있어요. 잠시만 기다려 주세요…'},{messageId});
+      if(created){
+        entry.progress = true;
+        entry.acknowledged = true;
+        res.json({});
+      }
+    }catch(error){
+      if(error?.response?.status === 409){
+        // 재시작 뒤에도 같은 요청으로 이미 만든 메시지가 있으면 쓰기를 반복하지 않는다.
+        const reply = '이 요청은 이미 접수된 기록이 있어요. 시트나 캘린더의 현재 내용을 확인한 뒤 필요하면 새로 요청해 주세요.';
+        entry.acknowledged = true;
+        res.json({text:reply});
+        return {alreadyReceived:reply};
+      }
+      uncertainProgress = !error?.response && !error?.gchatBeforeSend;
+      gchatLogFailure('진행 표시를 보내지 못해 기존 응답 방식으로 처리',error);
+    }
+    return {uncertainProgress};
+  })();
+  entry.job = queueGoogleChatUser(key, async()=>{
+    try{
+      const preparation = await entry.prepared;
+      if(preparation.alreadyReceived) return preparation.alreadyReceived;
+      let reply;
+      try{ reply = await handleAsync(text,key); }
+      catch(error){
+        gchatLogFailure('요청 처리 실패',error);
+        reply = '⚠️ 처리를 완료했는지 확인하지 못했어요. 변경 요청이었다면 시트나 캘린더의 현재 내용을 확인해 주세요.';
+      }
+      entry.reply = reply;
+      if(entry.progress) entry.deliveryFailed = !await finishGoogleChatProgress(messageName,reply,space,messageId);
+      else if(preparation.uncertainProgress){
+        // 생성 응답만 유실됐을 수 있다. 남아 있는 진행 메시지를 정리하되 작업은 다시 하지 않는다.
+        try{
+          const updated = await gchatApi('PATCH',messageName,{text:reply},{updateMask:'text'});
+          if(updated){ entry.progress = true; entry.acknowledged = true; res.json({}); }
+        }catch(error){ gchatLogFailure('진행 메시지 확인 실패 — 동기 답변 사용',error); }
+      }
+      return reply;
+    }finally{ entry.done = true; entry.ts = Date.now(); }
+  });
+  const reply = await entry.job;
+  if(!entry.acknowledged){ entry.acknowledged = true; return res.json({text:reply}); }
+}
+
 /* ===== 공통 두뇌 ===== */
 async function handleAsync(utterance, key){
+  if(/^(?:비서\s*)?(?:연결|배포)\s*(?:확인|진단)(?:해줘|해\s*줘)?[.!?\s]*$/.test(String(utterance || '').trim())) return diagnoseGasConnection();
   const history = getHistory(key);
   const pending = getPending(key);
 
@@ -294,7 +470,7 @@ function parseSiteScheduleCommand(utterance, pending = null, today = new Date().
   }
   const phase = phases[0]?.phase || (continuation ? pending.phase : '');
   let query = phases.length ? text.slice(0, phases[0].match.index) : '';
-  query = query.replace(/^(?:체크리스트|현장감리리스트|감리리스트|공정\s*캘린더)(?:에서|의|에)?\s*/, '')
+  query = query.replace(/^(?:체크리스트|현장감리리스트|현장리스트|감리리스트|공정\s*캘린더)(?:에서|의|에)?\s*/, '')
     .replace(/^(?:오늘|내일|모레|글피)\s+/, '')
     .replace(/\s*현장(?:의|은|는|에서|에)?\s*$/, '').replace(/의\s*$/, '').trim();
   if(continuation && (!query || /^(?:아니|그럼|그러면|날짜를?|일정을?)$/.test(query))) query = pending.query;
@@ -325,10 +501,13 @@ async function prepareSiteSchedule(intent, key){
   const found = await gasCall({action:'site_schedule_find',q:query,phase});
   if(found?.error || found?.result?.error) return gasFailure(found, '체크리스트 현장을 검색하지 못했어요.');
   const list = found?.result;
-  if(found?.scheduleApiVersion !== 1 || !Array.isArray(list) || list.some(row =>
+  if(found?.scheduleApiVersion !== 1){
+    return '⚠️ 비서에 연결된 Apps Script에서 공정일 API 버전을 확인하지 못했어요. Render의 GAS_URL과 새 버전으로 갱신한 웹앱 URL이 같은지 확인해 주세요.\n' + gasDeploymentHint();
+  }
+  if(!Array.isArray(list) || list.some(row =>
     !row || typeof row.address !== 'string' || !row.address || typeof row.vendor !== 'string' || row.phase !== phase ||
     typeof row.date !== 'string' || (row.date && !validSiteScheduleDate(row.date)) || typeof row.scheduleRef !== 'string' || !row.scheduleRef)){
-    return '⚠️ 체크리스트 공정일 수정 API가 아직 적용되지 않았어요. Apps Script 수정본을 저장하고 기존 웹앱 배포를 새 버전으로 갱신해 주세요.';
+    return '⚠️ 공정일 API 연결은 확인됐지만 현장 검색 결과에 주소·공정·날짜·확인 정보가 누락되었거나 형식이 달라요. 체크리스트의 현장주소와 Apps Script 검색 응답을 확인해 주세요.';
   }
   if(!list.length) return `'${query}'에 맞는 현장을 체크리스트에서 찾지 못했어요. 주소나 업체명을 다시 알려주세요.`;
   if(list.length > 1){
@@ -671,6 +850,32 @@ async function chat(utterance, history){
 }
 
 /* ===== GAS 호출 ===== */
+function gasDeploymentHint(){
+  const match = String(GAS_URL || '').match(/\/s\/([A-Za-z0-9_-]+)\/exec(?:[?#]|$)/);
+  return match ? '연결된 배포 ID 끝: …' + match[1].slice(-8) : 'GAS_URL에 Apps Script 웹앱 실행 주소(/exec)를 지정해 주세요.';
+}
+async function diagnoseGasConnection(){
+  const response = await gasCall({action:'site_schedule_find',q:'__aqara_connection_probe_no_site__',phase:'조명설치'});
+  const lines = ['비서 버전: ' + BOT_VERSION, gasDeploymentHint()];
+  if(response?.error || response?.result?.error) lines.push(gasFailure(response, 'Apps Script 연결을 확인하지 못했어요.'));
+  else if(response?.scheduleApiVersion === 1 && Array.isArray(response.result)) lines.push('✅ 체크리스트 공정일 API 연결 정상. 날짜나 번호는 변경하지 않았어요.');
+  else if(response?.scheduleApiVersion === 1) lines.push('⚠️ 공정일 API는 응답했지만 검색 결과 형식을 확인해야 해요.');
+  else lines.push('⚠️ 현재 연결된 주소에서 공정일 API 버전을 확인하지 못했어요. Render의 GAS_URL이 갱신한 웹앱 주소와 같은지 확인해 주세요.');
+  return lines.join('\n');
+}
+function decodeGasResponse(data, writing){
+  if(typeof data === 'string'){
+    try { data = JSON.parse(data); }
+    catch {
+      return {error:'Apps Script가 JSON 데이터 대신 웹페이지나 다른 형식으로 응답했어요. GAS_URL의 /exec 주소와 웹앱 접근 권한을 확인해 주세요.' +
+        (writing ? ' 변경이 반영됐을 수 있으니 현재 값을 확인한 뒤 다시 요청해 주세요.' : ''),code:'GAS_NON_JSON'};
+    }
+  }
+  if(!data || typeof data !== 'object' || Array.isArray(data)){
+    return {error:'Apps Script 응답 형식을 확인하지 못했어요.' + (writing ? ' 변경이 반영됐을 수 있으니 현재 값을 확인해 주세요.' : ''),code:'GAS_BAD_RESPONSE'};
+  }
+  return data;
+}
 function gasFailure(response, fallback){
   const result = response?.result;
   const reason = response?.error || result?.error;
@@ -690,13 +895,15 @@ function calendarBatchReply(response, verb){
     (reasons.length ? `\n${reasons.join('\n')}` : '');
 }
 async function gasCall(extra){
+  const writing = /^(site_add|site_status|site_schedule_update|cal_create|cal_update|cal_delete|cal_update_many|cal_delete_many)$/.test(extra?.action || '');
+  if(!GAS_URL || !GAS_TOKEN) return {error:'Render 환경변수 GAS_URL과 GAS_TOKEN 설정을 확인해 주세요.',code:'GAS_CONFIG_MISSING'};
   const clean = {}; Object.keys(extra||{}).forEach(k=>{ if(extra[k]!=null) clean[k]=extra[k]; });
   const params = new URLSearchParams({ token:GAS_TOKEN, ...clean });
   try {
-    const { data } = await axios.get(`${GAS_URL}?${params.toString()}`, { maxRedirects:5, timeout:20000 });
-    return data;
+    const { data } = await axios.get(`${GAS_URL.trim()}?${params.toString()}`, { maxRedirects:5, timeout:20000 });
+    return decodeGasResponse(data, writing);
   } catch (err) {
-    const writing = /^(site_add|site_status|site_schedule_update|cal_create|cal_update|cal_delete|cal_update_many|cal_delete_many)$/.test(extra?.action || '');
+    if(!writing && [401,403,404].includes(err?.response?.status)) return {error:`Apps Script 접근에 실패했어요 (HTTP ${err.response.status}). GAS_URL과 웹앱 배포의 접근 권한을 확인해 주세요.`,code:'GAS_ACCESS'};
     return { error: writing ? '서버 응답을 확인하지 못했습니다. 작업이 반영됐을 수 있으니 중복 요청 전에 시트나 캘린더를 확인해 주세요.' : '서버 응답을 확인하지 못했습니다. 잠시 후 다시 조회해 주세요.' };
   }
 }
