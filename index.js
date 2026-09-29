@@ -1,4 +1,4 @@
-/*** 카카오+구글챗 비서 (Gemini · 검색 · 대화기억 · 캘린더 쓰기) ********
+/*** 구글챗 비서 (Gemini · 검색 · 대화기억 · 캘린더 쓰기) ********
  * 읽기: 일정/메일/드라이브/시트 조회
  * 쓰기: 일정 추가·수정·삭제 (실행 전 "이렇게 할게요?" 확인)
  * 기억/대기작업: 서버 메모리 (재시작 시 초기화)
@@ -6,6 +6,7 @@
  * [2026-09-29a] 현장 공정 날짜는 체크리스트 검색·확인·단일 날짜 수정으로 처리.
  * [2026-09-29b] GAS 연결 진단·현장리스트 표현 보완·선택형 구글챗 처리 중 표시.
  * [2026-09-29c] 중복 확인 방지·같은 현장의 여러 공정 한 번 확인·응답 유실 시 현재 날짜 재조회.
+ * [2026-09-29d] '3일 뒤/후' 공정 날짜·띄어 쓴 현장 리스트 인식 보완, 카카오톡 연결 제거.
  *
  * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
  *   - 감리시트(본진)에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
@@ -29,7 +30,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
-const BOT_VERSION = '2026-09-29c';
+const BOT_VERSION = '2026-09-29d';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.5-flash' });
 
@@ -96,16 +97,6 @@ async function askAI(prompt, tries=3){
 }
 
 app.get('/', (_q,res)=>res.send('skill server ok'));
-
-/* ===== 카카오 ===== */
-app.post('/skill', (req,res)=>{
-  const ur = req.body?.userRequest || {};
-  const key = ur.user?.id || null;
-  res.json({ version:'2.0', useCallback:true, data:{ text:'🤔 잠깐만요, 확인하고 있어요…' } });
-  if(!ur.callbackUrl) return;
-  handleAsync(ur.utterance||'', key).then(t=>t == null ? undefined : sendKakao(ur.callbackUrl,t))
-    .catch(async e=>{ console.error('[kakao]',e?.message||e); await sendKakao(ur.callbackUrl,'⚠️ 처리 중 오류가 났어요.').catch(()=>{});});
-});
 
 /* ===== 구글 챗 ===== */
 app.post('/gchat', async (req,res)=>{
@@ -476,6 +467,8 @@ const SITE_SCHEDULE_PHASES = [
   { phase: 'SW세팅', pattern: /(?:s\s*w|소프트웨어)\s*(?:세팅|셋팅|설정)/i },
   { phase: '검수인계', pattern: /검수\s*(?:[·/ㆍ]\s*)?(?:인계)?|인계\s*일/i },
 ];
+// 오늘 기준 N일 뒤/후. 번지·소수·음수의 일부나 '후문/뒤편'은 날짜로 읽지 않는다.
+const SITE_SCHEDULE_RELATIVE_DAYS = /(?<![\d./+\-])(\d{1,4})\s*일\s*(?:뒤|후)(?=$|[^가-힣\d]|로|에|야|이야|입니다)/g;
 
 function validSiteScheduleDate(value){
   if(typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -498,6 +491,9 @@ function siteScheduleDateFromText(text, today){
   }
   const relative = latest.match(/오늘|내일|모레|글피/g) || [];
   relative.forEach(day => dates.push(siteScheduleAddDays(today, {오늘:0, 내일:1, 모레:2, 글피:3}[day])));
+  for(const match of latest.matchAll(SITE_SCHEDULE_RELATIVE_DAYS)){
+    dates.push(siteScheduleAddDays(today, Number(match[1])));
+  }
   const week = latest.match(/(?:(다다음|다음|이번)\s*주\s*)?([월화수목금토일])요일/);
   if(week){
     const current = (new Date(today + 'T00:00:00Z').getUTCDay() + 6) % 7;
@@ -524,6 +520,7 @@ function siteScheduleTargetDate(text,today){
 function siteScheduleBatchSegmentIsDate(text){
   // 공정 사이에 다른 현장 이름이 섞이면 앞 현장에 모두 적용하지 않는다.
   const leftover = String(text)
+    .replace(SITE_SCHEDULE_RELATIVE_DAYS,'')
     .replace(/(?:(?:\d{4})\s*(?:[-/.]|년)\s*)?\d{1,2}\s*(?:[-/.]|월)\s*\d{1,2}(?:\s*일)?/g,'')
     .replace(/(?:(?:다다음|다음|이번)\s*주\s*)?[월화수목금토일]요일/g,'')
     .replace(/내일\s*모레|오늘|내일|모레|글피/g,'')
@@ -548,7 +545,7 @@ function parseSiteScheduleCommand(utterance, pending = null, today = new Date().
   phases.sort((a,b)=>a.match.index-b.match.index);
   const changing = /수정|변경|바꿔|바꾸|고쳐|고치|조정|옮겨|미뤄|당겨|연기|입력|설정|잡아|->|=>|→/.test(text);
   const scoped = /공정/.test(text) || (/현장|체크리스트|감리리스트/.test(text) && /날짜|일정|예정일|[가-힣]+일(?:을|은|이|로|에|\s)/.test(text));
-  const dateOnlyReply = /^(?:날짜(?:는|를)?\s*)?(?:(?:\d{4}\s*(?:[-/.]|년)\s*)?\d{1,2}\s*(?:[-/.]|월)\s*\d{1,2}(?:\s*일)?|오늘|내일\s*모레|내일|모레|글피|(?:(?:다다음|다음|이번)\s*주\s*)?[월화수목금토일]요일)(?:\s*(?:로|으로)?\s*(?:해줘|바꿔줘|수정해줘|변경해줘|야|이야|입니다)?)?[.!?\s]*$/.test(text);
+  const dateOnlyReply = /^(?:날짜(?:는|를)?\s*)?(?:(?:\d{4}\s*(?:[-/.]|년)\s*)?\d{1,2}\s*(?:[-/.]|월)\s*\d{1,2}(?:\s*일)?|\d{1,4}\s*일\s*(?:뒤|후)|오늘|내일\s*모레|내일|모레|글피|(?:(?:다다음|다음|이번)\s*주\s*)?[월화수목금토일]요일)(?:\s*(?:로|으로)?\s*(?:해줘|바꿔줘|수정해줘|변경해줘|야|이야|입니다)?)?[.!?\s]*$/.test(text);
   if(continuing && pending.asking === 'query' && !phases.length && !changing && !dateOnlyReply && !/메일|드라이브|회의|캘린더/.test(text)){
     return {action:'site_schedule',site:{query:text.replace(/\s*현장(?:이야|입니다)?\s*$/, '').trim(),phase:pending.phase,date:pending.date,changes:pending.changes}};
   }
@@ -561,7 +558,7 @@ function parseSiteScheduleCommand(utterance, pending = null, today = new Date().
   if(phases.length > 5 || new Set(phases.map(item=>item.phase)).size !== phases.length) return error('같은 공정에 날짜를 여러 번 지정했어요. 공정마다 바꿀 날짜를 하나씩 알려주세요.');
   if(phases.length && /계약일|발주일|납기일|3자\s*미팅|미팅일/.test(dateText)) return error('변경할 항목을 모두 확인하지 못했어요. 실사 / 배선 / 조명설치 / SW세팅 / 검수인계의 날짜만 함께 지정해 주세요.');
   let query = phases.length ? text.slice(0,phases[0].match.index) : '';
-  query = query.replace(/^(?:체크리스트|현장감리리스트|현장리스트|감리리스트|공정\s*캘린더)(?:에서|의|에)?\s*/, '')
+  query = query.replace(/^(?:체크\s*리스트|현장\s*감리\s*리스트|현장\s*리스트|감리\s*리스트|공정\s*캘린더)(?:에서|의|에)?\s*/, '')
     .replace(/^(?:오늘|내일|모레|글피)\s+/, '')
     .replace(/\s*현장(?:의|은|는|에서|에)?\s*$/, '').replace(/의\s*$/, '').trim();
   if(continuation && (!query || /^(?:아니|그럼|그러면|그리고|거기에|추가로|그|같은|날짜를?|일정을?)$/.test(query))) query = pending.query;
@@ -1144,11 +1141,6 @@ async function summarize(utterance, gas, history){
 - 앞 대화를 이어받은 요청이면 그 맥락에 맞게.
 - 결과 배열이 비어 있으면 둘러대지 말고 "드라이브 전체를 'XX'로 찾아봤는데 그런 파일은 없네요 🔍"처럼 솔직하게. "제가 직접 찾아드릴게요", "링크를 찾아 보내드릴게요" 같은 지키지 못할 약속은 절대 하지 마.`;
   return (await askAI(prompt)).slice(0,980);
-}
-
-/* ===== 출구 ===== */
-async function sendKakao(callbackUrl, text){
-  await axios.post(callbackUrl, { version:'2.0', template:{ outputs:[{ simpleText:{ text } }] } }, { timeout:10000 });
 }
 
 const PORT = process.env.PORT || 3000;
