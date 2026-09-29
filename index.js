@@ -7,6 +7,7 @@
  * [2026-09-29b] GAS 연결 진단·현장리스트 표현 보완·선택형 구글챗 처리 중 표시.
  * [2026-09-29c] 중복 확인 방지·같은 현장의 여러 공정 한 번 확인·응답 유실 시 현재 날짜 재조회.
  * [2026-09-29d] '3일 뒤/후' 공정 날짜·띄어 쓴 현장 리스트 인식 보완, 카카오톡 연결 제거.
+ * [2026-09-29e] A열 현장코드는 수기 관리. 상태 변경 시 자동 발급 안내 제거.
  *
  * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
  *   - 감리시트(본진)에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
@@ -30,7 +31,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
-const BOT_VERSION = '2026-09-29d';
+const BOT_VERSION = '2026-09-29e';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.5-flash' });
 
@@ -427,6 +428,7 @@ ${historyText(history)}
 [drive] driveName=파일명에서 찾을 핵심 단어/문구(폴더 위치 무시, 부분일치). 예) "스마트홈 표준계약서 찾아줘"→driveName="표준계약서". 파일종류까지 좁혀야 할 때만 driveQuery=Drive검색식(mimeType 등). 보통은 driveName만 채우고 driveQuery는 null.
 [sheet] keyword=시트 이름 핵심 단어.
 [현장리스트 시트] '현장리스트'에 현장을 다루면:
+- 일련번호/현장코드(A열)는 사용자가 시트에서 수기로 관리해. 비서는 번호를 발급·수정·복원·숨김 처리하지 않으며 상태 변경으로 번호가 자동 생성된다고 안내하지 마.
 - 새 현장 추가 → action="site_add". site에 말한 항목만 채워: address(현장주소·필수), vendor(인테리어 업체명), proposer(아카라 영업담당), fieldMgr(현장담당 정=주담당), fieldMgrSub(현장담당 부=보조담당), spaceType(유형: 아파트/단독주택/오피스/상가/공공기관), area(공급면적 평수 숫자), meetingDate(3자미팅일 yyyy-mm-dd), startDate(계약일 yyyy-mm-dd), firstSurvey(실사일 yyyy-mm-dd), installDate(조명설치예정일 yyyy-mm-dd), custName/custTel(고객성함·연락처), siteMgr/siteMgrTel(현장실장·실장 연락처), siteLead/siteLeadTel(현장소장·소장 연락처), note(특이사항). 진행상태는 서버가 자동(제안)이니 넣지 마.
   ★현장담당 정/부 구분(중요): "현장담당: 정 홍길동" 또는 "현장담당(정) 홍길동" → fieldMgr=홍길동. "현장담당(부): 김철수" 또는 "현장담당 보조 김철수" → fieldMgrSub=김철수. 절대 두 사람을 fieldMgr 하나에 몰아넣지 마. 부담당은 반드시 fieldMgrSub에만 넣어. 정/부 표시가 없이 이름 하나만 있으면 fieldMgr(정)로.
   ★현장 필드는 서버가 이름을 그대로 시트에 적어(이메일 변환 안 함). 그러니 사람 이름은 한글 이름 그대로 넣어.
@@ -858,8 +860,7 @@ async function prepareSite(intent, key){
     return '⚠️ 현장 확인 정보가 없어 상태를 변경할 수 없어요. Apps Script의 기존 웹앱 배포를 수정본의 새 버전으로 갱신한 뒤 현장을 다시 검색해 주세요.';
   }
   setPending(key, { op:'site_status', siteRef:t.siteRef, status:st.status, summary:`${t.address} / ${t.vendor}` });
-  let extra = (st.status==='진행중'||st.status==='완료') && !t.code ? '\n(현장코드가 자동 생성돼요)' : '';
-  return `이 현장 상태를 바꿀게요 👇\n📋 ${t.address} / ${t.vendor}\n${t.status} → ${st.status}${extra}\n\n맞으면 "응", 아니면 "취소".`;
+  return `이 현장 상태를 바꿀게요 👇\n📋 ${t.address} / ${t.vendor}\n${t.status} → ${st.status}\n\n맞으면 "응", 아니면 "취소".`;
 }
 
 /* ===== 쓰기 준비 (확인 메시지 만들고 대기에 저장) ===== */
