@@ -9,6 +9,7 @@
  * [2026-09-29d] '3일 뒤/후' 공정 날짜·띄어 쓴 현장 리스트 인식 보완, 카카오톡 연결 제거.
  * [2026-09-29e] A열 현장코드는 수기 관리. 상태 변경 시 자동 발급 안내 제거.
  * [2026-09-29f] 여러 공정 검색·재조회를 한 번에 처리하고 읽기 재시도는 기존 제한시간 안에서만 수행.
+ * [2026-09-29g] 진행 표시와 HTTP 응답을 마친 공정 변경은 최대 60초 대기하고 현재 날짜를 15초 안에 재조회.
  *
  * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
  *   - 감리시트(본진)에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
@@ -32,7 +33,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
-const BOT_VERSION = '2026-09-29f';
+const BOT_VERSION = '2026-09-29g';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.5-flash' });
 
@@ -266,9 +267,9 @@ async function respondGoogleChatProgress(ev, text, key, res, receipt = {pending:
     try{
       const created = await gchatApi('POST',`${space}/messages`,{text:'✍️ 요청을 확인하고 있어요. 잠시만 기다려 주세요…'},{messageId});
       if(created){
+        res.json({});
         entry.progress = true;
         entry.acknowledged = true;
-        res.json({});
       }
     }catch(error){
       if(error?.response?.status === 409){
@@ -288,7 +289,9 @@ async function respondGoogleChatProgress(ev, text, key, res, receipt = {pending:
       const preparation = await entry.prepared;
       if(preparation.alreadyReceived) return preparation.alreadyReceived;
       let reply;
-      try{ reply = await handleAsync(text,key,receipt); }
+      // 진행 표시 전송과 HTTP 응답이 끝난 요청만 긴 작업을 기다릴 수 있다.
+      const executionReceipt = {...receipt,asyncReply:entry.progress === true && entry.acknowledged === true};
+      try{ reply = await handleAsync(text,key,executionReceipt); }
       catch(error){
         gchatLogFailure('요청 처리 실패',error);
         reply = '⚠️ 처리를 완료했는지 확인하지 못했어요. 변경 요청이었다면 시트나 캘린더의 현재 내용을 확인해 주세요.';
@@ -370,7 +373,7 @@ async function handleAsyncInOrder(utterance, key, receipt){
   if(pending && action==='confirm'){
     if(receipt && receipt.pending !== pending) return '확인할 내용이 바뀌었어요. 위의 최신 변경 목록을 확인한 뒤 "응"이라고 해주세요.';
     clearPending(key); // 확인 메시지가 겹쳐도 같은 대기를 두 번 실행하지 않는다.
-    reply = await execPending(pending);
+    reply = await execPending(pending,{asyncReply:receipt?.asyncReply === true});
   }
   else if(pending && action==='cancel'){ clearPending(key); reply = '알겠어요, 취소했어요. 😊'; }
   else if(reviseCreate){ reply = await revisePending(pending, intent, key); }
@@ -936,7 +939,8 @@ async function prepareWrite(intent, key){
   return `이 일정을 이렇게 바꿀게요 👇\n기존: ${t.start} ${t.title}\n변경: ${fmtEvent({ title:e.title||t.title, date:e.date, start:e.start, end:e.end, allDay:e.allDay })}\n\n맞으면 "응", 아니면 "취소".`;
 }
 
-async function execPending(p){
+async function execPending(p, options = {}){
+  const scheduleTransport = options.asyncReply === true ? {asyncReply:true,timeout:60000} : {};
   if(p.op==='site_schedule_ask') return '현장·공정·바꿀 날짜를 먼저 알려주세요. 아직 변경할 내용을 확인하지 않았어요.';
   if(p.op==='site_schedule_many'){
     const items = p.items;
@@ -946,8 +950,8 @@ async function execPending(p){
         typeof item.oldDate !== 'string' || (item.oldDate && !validSiteScheduleDate(item.oldDate)))){
       return '⚠️ 여러 공정일의 확인 정보가 올바르지 않아요. 현장과 바꿀 날짜 전체를 다시 알려주세요.';
     }
-    const response = await gasCall({action:'site_schedule_update_many',items:JSON.stringify(items.map(item=>({scheduleRef:item.scheduleRef,date:item.date})))});
-    if(uncertainGasWrite(response)) return recheckSiteSchedule(p);
+    const response = await gasCall({action:'site_schedule_update_many',items:JSON.stringify(items.map(item=>({scheduleRef:item.scheduleRef,date:item.date})))},scheduleTransport);
+    if(uncertainGasWrite(response)) return recheckSiteSchedule(p,options);
     const result = response?.result;
     if(response?.error || !result) return gasFailure(response,'체크리스트 공정일 변경 결과를 확인하지 못했어요. 현재 날짜를 확인해 주세요.');
     if(response.scheduleApiVersion !== 1 || response.scheduleBatchApiVersion !== 1){
@@ -979,8 +983,8 @@ async function execPending(p){
     if(typeof p.scheduleRef !== 'string' || !p.scheduleRef || !validSiteScheduleDate(p.date)){
       return '⚠️ 공정일 확인 정보가 없거나 날짜가 올바르지 않아요. 현장과 바꿀 날짜를 다시 알려주세요.';
     }
-    const response = await gasCall({action:'site_schedule_update',scheduleRef:p.scheduleRef,date:p.date});
-    if(uncertainGasWrite(response)) return recheckSiteSchedule(p);
+    const response = await gasCall({action:'site_schedule_update',scheduleRef:p.scheduleRef,date:p.date},scheduleTransport);
+    if(uncertainGasWrite(response)) return recheckSiteSchedule(p,options);
     const result = response?.result;
     if(!result?.ok) return gasFailure(response, '체크리스트 공정일 변경을 완료하지 못했어요.');
     if(response?.scheduleApiVersion !== 1 || result.date !== p.date || result.phase !== p.phase ||
@@ -1096,7 +1100,7 @@ function calendarBatchReply(response, verb){
 function uncertainGasWrite(response){
   return ['GAS_WRITE_UNCERTAIN','GAS_NON_JSON','GAS_BAD_RESPONSE'].includes(response?.code);
 }
-async function recheckSiteSchedule(p){
+async function recheckSiteSchedule(p, options = {}){
   const items = p.op === 'site_schedule_many' ? p.items : [p];
   const grouped = new Map();
   items.forEach(item=>{
@@ -1107,7 +1111,7 @@ async function recheckSiteSchedule(p){
     if(!phases.includes(item.phase)) phases.push(item.phase);
   });
   const observations = new Map(await Promise.all([...grouped].map(async ([address,phases])=>
-    [address,await findSiteScheduleGroups(address,phases,{timeout:7000})])));
+    [address,await findSiteScheduleGroups(address,phases,{timeout:options.asyncReply === true ? 15000 : 7000})])));
   const checks = items.map(item=>{
     const address = item.address || p.address, vendor = item.vendor ?? p.vendor;
     const rows = observations.get(address)?.groups?.find(group=>group.phase === item.phase)?.rows;
@@ -1129,7 +1133,8 @@ async function gasCall(extra, options = {}){
   const params = new URLSearchParams({ token:GAS_TOKEN, ...clean });
   const readable = ['calendar','gmail','drive','sheet','cal_search','site_find','site_schedule_find','site_schedule_find_many','site_code_policy'].includes(extra?.action);
   const requestedTimeout = Number(options.timeout);
-  const maxBudget = /^site_schedule_find(?:_many)?$/.test(extra?.action || '') ? 25000 : 20000;
+  const asyncScheduleWrite = options.asyncReply === true && /^site_schedule_update(?:_many)?$/.test(extra?.action || '');
+  const maxBudget = asyncScheduleWrite ? 60000 : /^site_schedule_find(?:_many)?$/.test(extra?.action || '') ? 25000 : 20000;
   const budget = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? Math.min(requestedTimeout,maxBudget) : 20000;
   const started = Date.now();
   for(let attempt=0;attempt<2;attempt++){
