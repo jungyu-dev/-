@@ -11,6 +11,7 @@
  * [2026-09-29f] 여러 공정 검색·재조회를 한 번에 처리하고 읽기 재시도는 기존 제한시간 안에서만 수행.
  * [2026-09-29g] 진행 표시와 HTTP 응답을 마친 공정 변경은 최대 60초 대기하고 현재 날짜를 15초 안에 재조회.
  * [2026-09-29h] 서버에 기록한 최근 공정 변경을 기준으로 후속 요청과 원복을 해석하고 다시 확인.
+ * [2026-09-29i] 현장을 명시한 요청은 이력 없이 처리하고, 나열한 여러 공정의 공통 날짜를 인식.
  *
  * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
  *   - 감리시트(본진)에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
@@ -34,7 +35,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
-const BOT_VERSION = '2026-09-29h';
+const BOT_VERSION = '2026-09-29i';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.5-flash' });
 
@@ -506,8 +507,7 @@ function siteScheduleDateFromText(text, today){
   for(const match of latest.matchAll(SITE_SCHEDULE_RELATIVE_DAYS)){
     dates.push(siteScheduleAddDays(today, Number(match[1])));
   }
-  const week = latest.match(/(?:(다다음|다음|이번)\s*주\s*)?([월화수목금토일])요일/);
-  if(week){
+  for(const week of latest.matchAll(/(?:(다다음|다음|이번)\s*주\s*)?([월화수목금토일])요일/g)){
     const current = (new Date(today + 'T00:00:00Z').getUTCDay() + 6) % 7;
     const target = '월화수목금토일'.indexOf(week[2]);
     const offset = week[1] ? target - current + ({이번:0, 다음:7, 다다음:14}[week[1]]) : (target - current + 7) % 7;
@@ -545,12 +545,25 @@ function siteScheduleFollowupPhases(text){
   return aliases.filter(([,pattern])=>pattern.test(text)).map(([phase])=>phase);
 }
 function siteScheduleUndoLanguage(text){ return /원래(?:\s*날짜)?(?:대로|로)|원래\s*날짜|원복|되돌|변경\s*전(?:의)?\s*날짜|변경(?:을|은)?\s*취소/.test(text); }
+function cleanSiteScheduleQuery(text){
+  return text.replace(/^(?:체크\s*리스트|현장\s*감리\s*리스트|현장\s*리스트|감리\s*리스트|공정\s*캘린더)(?:에서|의|에)?\s*/, '')
+    .replace(/^(?:오늘|내일|모레|글피)\s+/, '')
+    .replace(/\s*현장(?:의|은|는|에서|에)?\s*$/, '').replace(/의\s*$/, '').trim();
+}
+function hasExplicitSiteScheduleTarget(text){
+  const positions = SITE_SCHEDULE_PHASES.map(rule=>text.search(rule.pattern)).filter(index=>index >= 0);
+  if(!positions.length) return false;
+  const query = cleanSiteScheduleQuery(text.slice(0,Math.min(...positions)));
+  // 이 지시어들은 저장된 현장을 필요로 한다. 실제 주소·업체를 말했으면 입력 오류도 기존 명시 요청 경로에서 설명한다.
+  return !!query && !/^(?:(?:아니|그럼|그러면|그리고|추가로|미안|죄송|위(?:에|의)?|앞(?:에|의)?|그중|그거|그건|그|같은|아까|방금|거기(?:에)?|있는|있던|말한|바꾼|변경한|수정한|현장|일정을?|공정|날짜를?)\s*)+$/.test(query);
+}
 function siteScheduleFollowupWanted(text, pending){
   if(/구글\s*캘린더|google\s*calendar|메일|드라이브|파일|회의/i.test(text)) return false;
   const undo = siteScheduleUndoLanguage(text);
   if(pending && !undo) return false;
   if(undo) return true;
-  const reference = /위에|위의|앞에|그\s*(?:현장|일정|공정)|같은\s*현장|아까|방금|그중|그거|그건|거기/.test(text);
+  if(hasExplicitSiteScheduleTarget(text)) return false;
+  const reference = /위에|위의|위\s*현장|앞에|앞\s*현장|그\s*(?:현장|일정|공정)|같은\s*현장|아까|방금|그중|그거|그건|거기/.test(text);
   const change = /바꿔|바꾸|변경|수정|미뤄|미루|당겨|옮겨|조정|해줘|잡아/.test(text);
   if(reference && (change || /날짜|일정|공정/.test(text))) return true;
   if(/둘\s*다|두\s*개|모두|전부|전체/.test(text) && change) return true;
@@ -750,6 +763,7 @@ function siteScheduleTargetDate(text,today){
 function siteScheduleBatchSegmentIsDate(text){
   // 공정 사이에 다른 현장 이름이 섞이면 앞 현장에 모두 적용하지 않는다.
   const leftover = String(text)
+    .replace(/둘\s*다|두\s*(?:개|공정)|셋\s*다|세\s*(?:개|공정)|넷\s*다|네\s*(?:개|공정)|다섯\s*(?:개|공정|다)|전부|전체|같은\s*날짜|동일한?\s*날짜|같이|및/g,'')
     .replace(SITE_SCHEDULE_RELATIVE_DAYS,'')
     .replace(/(?:(?:\d{4})\s*(?:[-/.]|년)\s*)?\d{1,2}\s*(?:[-/.]|월)\s*\d{1,2}(?:\s*일)?/g,'')
     .replace(/(?:(?:다다음|다음|이번)\s*주\s*)?[월화수목금토일]요일/g,'')
@@ -787,15 +801,20 @@ function parseSiteScheduleCommand(utterance, pending = null, today = new Date().
   if(/(?:\d{1,2}\s*시|\d{1,2}:\d{2})/.test(text)) return error('체크리스트에는 공정 날짜만 기록해요. 시간을 제외하고 바꿀 날짜를 알려주세요.');
   if(phases.length > 5 || new Set(phases.map(item=>item.phase)).size !== phases.length) return error('같은 공정에 날짜를 여러 번 지정했어요. 공정마다 바꿀 날짜를 하나씩 알려주세요.');
   if(phases.length && /계약일|발주일|납기일|3자\s*미팅|미팅일/.test(dateText)) return error('변경할 항목을 모두 확인하지 못했어요. 실사 / 배선 / 조명설치 / SW세팅 / 검수인계의 날짜만 함께 지정해 주세요.');
-  let query = phases.length ? text.slice(0,phases[0].match.index) : '';
-  query = query.replace(/^(?:체크\s*리스트|현장\s*감리\s*리스트|현장\s*리스트|감리\s*리스트|공정\s*캘린더)(?:에서|의|에)?\s*/, '')
-    .replace(/^(?:오늘|내일|모레|글피)\s+/, '')
-    .replace(/\s*현장(?:의|은|는|에서|에)?\s*$/, '').replace(/의\s*$/, '').trim();
+  let query = cleanSiteScheduleQuery(phases.length ? text.slice(0,phases[0].match.index) : '');
   if(continuation && (!query || /^(?:아니|그럼|그러면|그리고|거기에|추가로|그|같은|날짜를?|일정을?)$/.test(query))) query = pending.query;
   if(phases.length > 1){
+    const segments = phases.map((item,index)=>text.slice(item.match.index+item.match[0].length,phases[index+1]?.match.index ?? text.length));
+    const tail = segments[segments.length-1];
+    const collective = /둘\s*다|두\s*(?:개|공정)|셋\s*다|세\s*(?:개|공정)|넷\s*다|네\s*(?:개|공정)|다섯\s*(?:개|공정|다)|모두|전부|전체|함께|같이|같은\s*날짜|동일한?\s*날짜/.test(tail);
+    const counts = [...tail.matchAll(/(둘|두|셋|세|넷|네|다섯)\s*(?:다|개|공정)/g)].map(match=>({둘:2,두:2,셋:3,세:3,넷:4,네:4,다섯:5}[match[1]]));
+    if(counts.some(count=>count !== phases.length)) return error('말씀하신 공정 개수와 나열한 공정이 달라요. 함께 바꿀 공정을 확인해 주세요.');
+    const connected = segments.slice(0,-1).every(segment=>/과|와|하고|이랑|랑|및/.test(segment));
+    const sharedDate = (collective || connected) && segments.slice(0,-1).every(segment=>/^(?:\s|[,，;:：·/()]|일|은|는|을|를|과|와|하고|이랑|랑|및|그리고)*$/.test(segment))
+      ? siteScheduleTargetDate(tail,today) : '';
     const changes = phases.map((item,index)=>{
-      const segment = text.slice(item.match.index+item.match[0].length,phases[index+1]?.match.index ?? text.length);
-      return {phase:item.phase,date:siteScheduleTargetDate(segment,today),clean:siteScheduleBatchSegmentIsDate(segment)};
+      const segment = segments[index];
+      return {phase:item.phase,date:sharedDate || siteScheduleTargetDate(segment,today),clean:siteScheduleBatchSegmentIsDate(segment)};
     });
     if(changes.some(item=>!item.clean)) return error('여러 현장이나 다른 요청이 섞였는지 확인해 주세요. 현장 한 곳을 먼저 적고, 각 공정의 새 날짜를 하나씩 알려주세요.');
     if(changes.some(item=>!validSiteScheduleDate(item.date))) return error('공정마다 바꿀 날짜를 하나씩 정확히 알려주세요. 날짜가 빠지거나 여러 개로 해석돼 아직 변경을 준비하지 않았어요.');
