@@ -9,6 +9,7 @@
   "dependencies": {
     "express": "^4.19.2",
     "axios": "^1.7.2",
-    "@google/generative-ai": "^0.21.0"
+    "@google/generative-ai": "^0.21.0",
+    "google-auth-library": "^10.9.1"
   }
 }
