@@ -3,6 +3,7 @@
  * 쓰기: 일정 추가·수정·삭제 (실행 전 "이렇게 할게요?" 확인)
  * 기억/대기작업: 서버 메모리 (재시작 시 초기화)
  * Render 환경변수: GAS_URL, GAS_TOKEN, GEMINI_API_KEY, (선택) GEMINI_MODEL
+ * [2026-09-29a] 현장 공정 날짜는 체크리스트 검색·확인·단일 날짜 수정으로 처리.
  *
  * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
  *   - 감리시트(본진)에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
@@ -55,6 +56,8 @@ function pendingSummary(p){
   if(p.op==='update') return `수정: ${p.summary}`;
   if(p.op==='site_add') return `현장 추가 (진행상태: 제안)\n${fmtSite(p.site)}`;
   if(p.op==='site_status') return `현장 상태 변경: ${p.summary} → ${p.status}`;
+  if(p.op==='site_schedule') return `체크리스트 공정일 변경: ${p.summary}\n${p.phase}: ${p.oldDate || '미입력'} → ${p.date}`;
+  if(p.op==='site_schedule_ask') return `체크리스트 공정일 변경: ${p.query || '(현장 미지정)'} / ${p.phase || '(공정 미지정)'} / ${p.date || '(날짜 미지정)'}`;
   if(p.op==='update_many') return `${p.summary} 일정 일괄 수정`;
   if(p.op==='delete_many') return `${p.summary} 일정 일괄 삭제`;
   return '';
@@ -119,7 +122,8 @@ async function handleAsync(utterance, key){
     return reply;
   }
 
-  const intent = await parseIntent(utterance, history, pending);
+  // 공정 날짜는 구글 캘린더 검색으로 빠지지 않도록 먼저 명확한 요청을 처리한다.
+  const intent = parseSiteScheduleCommand(utterance, pending) || await parseIntent(utterance, history, pending);
   let action = intent.action;
   if(!pending && (action==='confirm'||action==='cancel')) action='chat';
 
@@ -127,15 +131,22 @@ async function handleAsync(utterance, key){
   // 대기 중 같은 종류의 수정 요청이면 대기 일정에 병합 (현장 대기는 상단 handleSiteFlow에서 처리됨)
   const reviseCreate = pending && pending.op==='create' && (action==='revise' || action==='create' || action==='update');
 
-  if(pending && action==='confirm'){ reply = await execPending(pending); clearPending(key); }
+  if(pending && action==='confirm'){
+    clearPending(key); // 확인 메시지가 겹쳐도 같은 대기를 두 번 실행하지 않는다.
+    reply = await execPending(pending);
+  }
   else if(pending && action==='cancel'){ clearPending(key); reply = '알겠어요, 취소했어요. 😊'; }
   else if(reviseCreate){ reply = await revisePending(pending, intent, key); }
+  else if(pending && (pending.op==='site_schedule' || pending.op==='site_schedule_ask') && action==='revise'){
+    reply = await prepareSiteSchedule({ site: { query: pending.query, phase: pending.phase, date: intent.site?.date || intent.event?.date } }, key);
+  }
   else if(pending && (action==='chat' || action==='calendar' || action==='gmail' || action==='drive' || action==='sheet')){
     // 대기 중인데 못 알아들은 말/엉뚱한 말 → 대기를 깨지 말고 다시 확인 요청
     reply = `방금 건 잘 못 알아들었어요. 🤔 아래 내용으로 진행할까요?\n\n${pendingSummary(pending)}\n\n"응"이면 진행, "취소"면 취소할게요.`;
   }
   else if(action==='create'||action==='update'||action==='delete'){ clearPending(key); reply = await prepareWrite({...intent, action, _utterance:utterance}, key); }
   else if(action==='site_add'||action==='site_status'){ clearPending(key); reply = await prepareSite({...intent, action}, key); }
+  else if(action==='site_schedule'){ reply = await prepareSiteSchedule(intent, key); }
   else if(action==='chat'){ clearPending(key); reply = await chat(utterance, history); }
   else { clearPending(key); const gas = await fetchGas({...intent, action}); reply = await summarize(utterance, gas, history); }
 
@@ -164,11 +175,14 @@ ${historyText(history)}
 [이번 발화]
 "${utterance}"
 
-형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"spaceType":null,"area":null,"meetingDate":null,"startDate":null,"firstSurvey":null,"installDate":null,"proposer":null,"fieldMgr":null,"fieldMgrSub":null,"custName":null,"custTel":null,"siteMgr":null,"siteMgrTel":null,"siteLead":null,"siteLeadTel":null,"query":null,"status":null}}
+형식: {"action":"calendar|gmail|drive|sheet|chat|create|update|delete|confirm|cancel|revise|site_add|site_status|site_schedule","from":null,"to":null,"gmailQuery":null,"driveName":null,"driveQuery":null,"keyword":null,"event":{"title":null,"date":"yyyy-mm-dd|null","start":"HH:mm|null","end":"HH:mm|null","allDay":false,"category":null,"guests":[],"names":[],"findDate":null,"findDateTo":null,"target":null},"site":{"address":null,"vendor":null,"note":null,"spaceType":null,"area":null,"meetingDate":null,"startDate":null,"firstSurvey":null,"installDate":null,"proposer":null,"fieldMgr":null,"fieldMgrSub":null,"custName":null,"custTel":null,"siteMgr":null,"siteMgrTel":null,"siteLead":null,"siteLeadTel":null,"query":null,"status":null,"phase":null,"date":null}}
 
 [분류]
 - 일정 조회→calendar, 메일→gmail, 드라이브/파일→drive, 시트→sheet
 - 일정 추가→create, 일정 수정/변경→update, 일정 삭제/취소→delete
+- 현장의 실사·배선·조명설치·SW세팅·검수인계 날짜 수정은 최우선으로 site_schedule. 체크리스트/현장감리리스트의 공정 날짜이며 일반 구글 캘린더 update로 분류하지 마. 사용자가 명시적으로 '구글 캘린더'라고 한 경우에만 캘린더 일정으로 처리해.
+- 예: '수원 인계동 현장 조명 설치일을 모레로 수정해줘' → site_schedule, site.query='수원 인계동', site.phase='조명설치', site.date=오늘+2일. site.query에는 현장명/주소/업체명만 넣고 공정명·날짜·수정 요청 문구는 빼.
+- site_schedule의 phase는 실사|배선|조명설치|SW세팅|검수인계. 날짜는 사용자가 지정한 새 날짜만 yyyy-MM-dd로 넣고 없으면 null. 한 번에 현장 한 곳의 공정 날짜 하나만 수정하며 여러 공정/날짜를 요청하면 하나씩 지정하도록 안내해.
 - 인사·잡담·불가능한 요청→chat
 [맥락 이어받기] "그중에서/그건/그럼 그건/PDF로 된 거" 처럼 앞을 가리키면 직전 대화의 대상·조건을 이어받아 채워.
 [calendar] from/to 날짜. "오늘"→from=to=오늘, 하루면 from=to 동일, "이번주/다음주/주말/이번달"은 범위, 없으면 null.
@@ -196,16 +210,137 @@ ${historyText(history)}
   try{
     const txt = (await askAI(prompt)).replace(/```json|```/g,'').trim();
     const o = JSON.parse(txt);
-    const ok = ['calendar','gmail','drive','sheet','chat','create','update','delete','confirm','cancel','revise','site_add','site_status'];
+    const ok = ['calendar','gmail','drive','sheet','chat','create','update','delete','confirm','cancel','revise','site_add','site_status','site_schedule'];
     const c = v => (v && v!=='null' ? v : null);
     const ev = o.event || {};
     return {
       action: ok.includes(o.action)?o.action:'chat',
       from:c(o.from), to:c(o.to), gmailQuery:c(o.gmailQuery), driveName:c(o.driveName), driveQuery:c(o.driveQuery), keyword:c(o.keyword),
       event:{ title:c(ev.title), date:c(ev.date), start:c(ev.start), end:c(ev.end), allDay:!!ev.allDay, category:c(ev.category), guests:Array.isArray(ev.guests)?ev.guests.filter(x=>x&&x.indexOf('@')!==-1):[], names:Array.isArray(ev.names)?ev.names.filter(Boolean):[], findDate:c(ev.findDate), findDateTo:c(ev.findDateTo), target:c(ev.target) },
-      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','spaceType','area','meetingDate','startDate','firstSurvey','installDate','proposer','fieldMgr','fieldMgrSub','custName','custTel','siteMgr','siteMgrTel','siteLead','siteLeadTel','query','status'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
+      site: (function(st){ st=st||{}; const o={}; ['address','vendor','note','spaceType','area','meetingDate','startDate','firstSurvey','installDate','proposer','fieldMgr','fieldMgrSub','custName','custTel','siteMgr','siteMgrTel','siteLead','siteLeadTel','query','status','phase','date'].forEach(k=>{ o[k]=c(st[k]); }); return o; })(o.site),
     };
   }catch{ return { action:'chat', event:{}, site:{} }; }
+}
+
+/* 체크리스트 공정명과 날짜를 분리한다. 이 경로에서는 AI가 수정 대상을 결정하지 않는다. */
+const SITE_SCHEDULE_PHASES = [
+  { phase: '실사', pattern: /(?:최초\s*)?실사/i },
+  { phase: '배선', pattern: /(?:전기\s*)?배선/i },
+  { phase: '조명설치', pattern: /조명\s*설치/i },
+  { phase: 'SW세팅', pattern: /(?:s\s*w|소프트웨어)\s*(?:세팅|셋팅|설정)/i },
+  { phase: '검수인계', pattern: /검수\s*(?:[·/ㆍ]\s*)?(?:인계)?|인계\s*일/i },
+];
+
+function validSiteScheduleDate(value){
+  if(typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = new Date(value + 'T00:00:00Z');
+  return Number.isFinite(d.getTime()) && d.toISOString().slice(0,10) === value;
+}
+function siteScheduleAddDays(today, days){
+  const d = new Date(today + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0,10);
+}
+function siteScheduleDateFromText(text, today){
+  // '모레 말고 내일'은 마지막 정정만 반영한다.
+  const latest = String(text).split(/말고|아니고/).pop().replace(/내일\s*모레/g, '모레');
+  const dates = [];
+  const absolute = /(?<![\d./-])(?:(\d{4})\s*(?:[-/.]|년)\s*)?(\d{1,2})\s*(?:[-/.]|월)\s*(\d{1,2})(?:\s*일)?(?!\d|\s*(?:번지|번길|동|호|층))/g;
+  let match;
+  while((match = absolute.exec(latest))){
+    dates.push(`${match[1] || today.slice(0,4)}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}`);
+  }
+  const relative = latest.match(/오늘|내일|모레|글피/g) || [];
+  relative.forEach(day => dates.push(siteScheduleAddDays(today, {오늘:0, 내일:1, 모레:2, 글피:3}[day])));
+  const week = latest.match(/(?:(다다음|다음|이번)\s*주\s*)?([월화수목금토일])요일/);
+  if(week){
+    const current = (new Date(today + 'T00:00:00Z').getUTCDay() + 6) % 7;
+    const target = '월화수목금토일'.indexOf(week[2]);
+    const offset = week[1] ? target - current + ({이번:0, 다음:7, 다다음:14}[week[1]]) : (target - current + 7) % 7;
+    dates.push(siteScheduleAddDays(today, offset));
+  }
+  const unique = [...new Set(dates)];
+  return unique.length === 1 ? unique[0] : '';
+}
+
+function parseSiteScheduleCommand(utterance, pending = null, today = new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Seoul'})){
+  const text = String(utterance || '').trim();
+  const continuing = pending && ['site_schedule','site_schedule_ask'].includes(pending.op);
+  if(continuing && /^(?:응|네|예|맞아|그래|좋아|ㅇㅇ|확인|진행해|그대로\s*(?:진행|해줘)?)[.!?\s]*$/.test(text)){
+    return pending.op === 'site_schedule' ? {action:'confirm'} : {action:'site_schedule',site:{query:pending.query,phase:pending.phase,date:pending.date}};
+  }
+  if(continuing && /^(?:취소|아니|아니야|하지\s*마|안돼)[.!?\s]*$/.test(text)) return {action:'cancel'};
+  // 명시한 구글 캘린더 및 새 현장 등록 요청은 기존 경로를 유지한다.
+  if(/구글\s*캘린더|google\s*calendar|새\s*현장|현장.*(?:추가|등록)/i.test(text)) return null;
+  const phases = SITE_SCHEDULE_PHASES.map(rule => ({...rule, match: text.match(rule.pattern)})).filter(rule => rule.match);
+  const changing = /수정|변경|바꿔|바꾸|고쳐|고치|조정|옮겨|미뤄|당겨|연기|입력|설정|잡아/.test(text);
+  const scoped = /공정/.test(text) || (/현장|체크리스트|감리리스트/.test(text) && /날짜|일정|예정일|[가-힣]+일(?:을|은|이|로|에|\s)/.test(text));
+  // 주소를 되묻는 단계에서는 주소 속 숫자가 앞서 확인한 날짜를 바꾸지 않는다.
+  const dateOnlyReply = /^(?:날짜(?:는|를)?\s*)?(?:(?:\d{4}\s*(?:[-/.]|년)\s*)?\d{1,2}\s*(?:[-/.]|월)\s*\d{1,2}(?:\s*일)?|오늘|내일\s*모레|내일|모레|글피|(?:(?:다다음|다음|이번)\s*주\s*)?[월화수목금토일]요일)(?:\s*(?:로|으로)?\s*(?:해줘|바꿔줘|수정해줘|변경해줘|야|이야|입니다)?)?[.!?\s]*$/.test(text);
+  if(continuing && pending.asking === 'query' && !phases.length && !changing && !dateOnlyReply && !/메일|드라이브|회의|캘린더/.test(text)){
+    return {action:'site_schedule',site:{query:text.replace(/\s*현장(?:이야|입니다)?\s*$/, '').trim(),phase:pending.phase,date:pending.date}};
+  }
+  // 주소의 동·호수나 번지를 날짜로 해석하지 않는다.
+  const dateText = phases.length ? text.slice(phases[0].match.index + phases[0].match[0].length) : text;
+  const date = siteScheduleDateFromText(dateText, today) || (/^(?:오늘|내일|모레|글피)\s+/.test(text) ? siteScheduleDateFromText(text.split(/\s+/)[0], today) : '');
+  const continuation = continuing && !/메일|드라이브|회의|캘린더/.test(text) &&
+    (date || phases.length || (pending.op === 'site_schedule_ask' && pending.asking === 'query'));
+  if(!continuation && !(changing && (phases.length || scoped))) return null;
+  if(phases.length > 1 || /(?:전부|모두|일괄|둘\s*다)/.test(text)){
+    return {action:'site_schedule',site:{},error:'공정 날짜는 한 번에 현장 한 곳의 공정 하나씩 변경해 주세요.'};
+  }
+  if(/(?:\d{1,2}\s*시|\d{1,2}:\d{2})/.test(text)){
+    return {action:'site_schedule',site:{},error:'체크리스트에는 공정 날짜만 기록해요. 시간을 제외하고 바꿀 날짜를 알려주세요.'};
+  }
+  const phase = phases[0]?.phase || (continuation ? pending.phase : '');
+  let query = phases.length ? text.slice(0, phases[0].match.index) : '';
+  query = query.replace(/^(?:체크리스트|현장감리리스트|감리리스트|공정\s*캘린더)(?:에서|의|에)?\s*/, '')
+    .replace(/^(?:오늘|내일|모레|글피)\s+/, '')
+    .replace(/\s*현장(?:의|은|는|에서|에)?\s*$/, '').replace(/의\s*$/, '').trim();
+  if(continuation && (!query || /^(?:아니|그럼|그러면|날짜를?|일정을?)$/.test(query))) query = pending.query;
+  if(continuation && pending.asking === 'query' && !phases.length && !date) query = text.replace(/\s*현장(?:이야|입니다)?\s*$/, '').trim();
+  return {action:'site_schedule',site:{query,phase,date: date || (continuation && pending.op === 'site_schedule_ask' && pending.asking !== 'date' ? pending.date : '')}};
+}
+
+async function prepareSiteSchedule(intent, key){
+  clearPending(key);
+  if(intent.error) return `⚠️ ${intent.error}`;
+  if(!key) return '사용자를 확인할 수 없어요. 비서와의 개인 대화에서 다시 요청해 주세요.';
+  const st = intent.site || {};
+  const query = typeof st.query === 'string' ? st.query.trim() : '';
+  const phase = SITE_SCHEDULE_PHASES.find(rule => rule.phase === st.phase)?.phase || '';
+  const date = typeof st.date === 'string' ? st.date.trim() : '';
+  if(!phase){
+    setPending(key, {op:'site_schedule_ask',query,phase,date,asking:'phase'});
+    return '체크리스트에서 어느 공정 날짜를 바꿀까요? 실사 / 배선 / 조명설치 / SW세팅 / 검수인계 중 하나를 알려주세요.';
+  }
+  if(!query){
+    setPending(key, {op:'site_schedule_ask',query,phase,date,asking:'query'});
+    return `${phase} 날짜를 바꿀 현장의 주소나 업체명을 알려주세요.`;
+  }
+  if(!validSiteScheduleDate(date)){
+    setPending(key, {op:'site_schedule_ask',query,phase,date:'',asking:'date'});
+    return `${query} 현장의 ${phase} 날짜를 언제로 바꿀까요? ${date ? '존재하는 날짜로 ' : ''}날짜 하나를 알려주세요. (예: 모레 / 2026-10-01)`;
+  }
+  const found = await gasCall({action:'site_schedule_find',q:query,phase});
+  if(found?.error || found?.result?.error) return gasFailure(found, '체크리스트 현장을 검색하지 못했어요.');
+  const list = found?.result;
+  if(found?.scheduleApiVersion !== 1 || !Array.isArray(list) || list.some(row =>
+    !row || typeof row.address !== 'string' || !row.address || typeof row.vendor !== 'string' || row.phase !== phase ||
+    typeof row.date !== 'string' || (row.date && !validSiteScheduleDate(row.date)) || typeof row.scheduleRef !== 'string' || !row.scheduleRef)){
+    return '⚠️ 체크리스트 공정일 수정 API가 아직 적용되지 않았어요. Apps Script 수정본을 저장하고 기존 웹앱 배포를 새 버전으로 갱신해 주세요.';
+  }
+  if(!list.length) return `'${query}'에 맞는 현장을 체크리스트에서 찾지 못했어요. 주소나 업체명을 다시 알려주세요.`;
+  if(list.length > 1){
+    setPending(key, {op:'site_schedule_ask',query:'',phase,date,asking:'query'});
+    return '체크리스트에 해당 현장이 여러 곳 있어요. 주소나 업체명을 더 구체적으로 알려주세요.\n' +
+      list.slice(0,8).map(row => `• ${row.address} / ${row.vendor || '업체 미입력'} / ${phase}: ${row.date || '미입력'}`).join('\n');
+  }
+  const target = list[0];
+  if(target.date === date) return `체크리스트의 ${target.address} / ${phase} 날짜는 이미 ${date}예요.`;
+  setPending(key, {op:'site_schedule',query,phase,date,oldDate:target.date,scheduleRef:target.scheduleRef,
+    address:target.address,summary:target.address + (target.vendor ? ' / ' + target.vendor : '')});
+  return `체크리스트 공정일을 이렇게 바꿀까요?\n📍 ${target.address}${target.vendor ? ' / ' + target.vendor : ''}\n${phase}: ${target.date || '미입력'} → ${date}\n\n맞으면 "응", 아니면 "취소"라고 해주세요.`;
 }
 
 /* 확인 대기 중인 일정에 '바꿀 값만' 반영하고 다시 확인 (검색 안 함) */
@@ -465,6 +600,20 @@ async function prepareWrite(intent, key){
 }
 
 async function execPending(p){
+  if(p.op==='site_schedule_ask') return '현장·공정·바꿀 날짜를 먼저 알려주세요. 아직 변경할 내용을 확인하지 않았어요.';
+  if(p.op==='site_schedule'){
+    if(typeof p.scheduleRef !== 'string' || !p.scheduleRef || !validSiteScheduleDate(p.date)){
+      return '⚠️ 공정일 확인 정보가 없거나 날짜가 올바르지 않아요. 현장과 바꿀 날짜를 다시 알려주세요.';
+    }
+    const response = await gasCall({action:'site_schedule_update',scheduleRef:p.scheduleRef,date:p.date});
+    const result = response?.result;
+    if(!result?.ok) return gasFailure(response, '체크리스트 공정일 변경을 완료하지 못했어요.');
+    if(response?.scheduleApiVersion !== 1 || result.date !== p.date || result.phase !== p.phase ||
+      typeof result.address !== 'string' || !result.address || (p.address && result.address !== p.address)){
+      return '⚠️ 체크리스트 수정 결과를 확인하지 못했어요. 날짜가 반영됐을 수 있으니 해당 현장의 현재 날짜를 확인하고 다시 요청해 주세요.';
+    }
+    return `✅ 체크리스트의 ${result.phase} 날짜를 변경했어요.\n📍 ${result.address}\n${p.oldDate || '미입력'} → ${result.date}\n공정 캘린더를 새로고침하면 반영돼요.`;
+  }
   if(p.op==='create'){
     const r = await gasCall({ action:'cal_create', title:p.event.title||'', date:p.event.date||'', start:p.event.start||'', end:p.event.end||'', allDay:p.event.allDay?'1':'', category:p.event.category||'', guests:(p.event.guests||[]).join(','), names:(p.event.names||[]).join(',') });
     const res = r?.result;
@@ -547,7 +696,7 @@ async function gasCall(extra){
     const { data } = await axios.get(`${GAS_URL}?${params.toString()}`, { maxRedirects:5, timeout:20000 });
     return data;
   } catch (err) {
-    const writing = /^(site_add|site_status|cal_create|cal_update|cal_delete|cal_update_many|cal_delete_many)$/.test(extra?.action || '');
+    const writing = /^(site_add|site_status|site_schedule_update|cal_create|cal_update|cal_delete|cal_update_many|cal_delete_many)$/.test(extra?.action || '');
     return { error: writing ? '서버 응답을 확인하지 못했습니다. 작업이 반영됐을 수 있으니 중복 요청 전에 시트나 캘린더를 확인해 주세요.' : '서버 응답을 확인하지 못했습니다. 잠시 후 다시 조회해 주세요.' };
   }
 }
