@@ -1674,4 +1674,10 @@ async function summarize(utterance, gas, history){
 }
 
 const PORT = process.env.PORT || 3000;
+// Loaded only after settings preparation. The independent external-clock job is OFF by default.
+if(process.env.GCHAT_WEEKLY_CONFIGURED === 'true'){
+  import('./weekly-scheduler.cjs').then(({installWeeklyRoutes})=>{
+    installWeeklyRoutes(app,{chat:gchatApi,gas:gasCall,env:process.env});
+  }).catch(()=>console.error('[weekly] scheduler setup failed'));
+}
 app.listen(PORT, ()=>console.log(`server on :${PORT}`));

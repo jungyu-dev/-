@@ -1,0 +1,56 @@
+name: Weekly field visits
+
+on:
+  schedule:
+    # Sunday 23:00 UTC = Monday 08:00 Asia/Seoul. Later ticks recover delayed/failed delivery.
+    - cron: '0,15,30,45 23 * * 0'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: weekly-field-visits
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    if: vars.GCHAT_WEEKLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call the private weekly job
+        env:
+          WEEKLY_ENDPOINT: ${{ vars.GCHAT_WEEKLY_ENDPOINT }}
+          WEEKLY_JOB_TOKEN: ${{ secrets.GCHAT_WEEKLY_JOB_TOKEN }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, time, urllib.request, urllib.error
+          endpoint = os.environ.get('WEEKLY_ENDPOINT', '')
+          token = os.environ.get('WEEKLY_JOB_TOKEN', '')
+          if endpoint != 'https://kakaobiseo.onrender.com/internal/weekly-notifications/run' or not re.fullmatch(r'[a-f0-9]{64}', token):
+              sys.exit('Weekly job configuration is missing or invalid')
+          # Avoid sending the secret through a redirect, and never print request headers or bodies.
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect)
+          for attempt in range(3):
+              request = urllib.request.Request(endpoint, data=b'{}', method='POST', headers={
+                  'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+              try:
+                  with opener.open(request, timeout=150) as response:
+                      result = json.load(response)
+                  status = result.get('status')
+                  if status not in ('complete', 'disabled', 'outside_window'):
+                      raise ValueError('unexpected status')
+                  print('Weekly job: ' + status)
+                  break
+              except urllib.error.HTTPError as error:
+                  if error.code not in (409, 429, 500, 502, 503, 504) or attempt == 2:
+                      sys.exit('Weekly job HTTP failure: ' + str(error.code))
+              except Exception:
+                  if attempt == 2:
+                      sys.exit('Weekly job response unavailable; inspect server status before retrying')
+              time.sleep(20)
+          PY
