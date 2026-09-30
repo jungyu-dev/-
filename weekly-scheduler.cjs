@@ -58,6 +58,8 @@ function createWeeklyNotifier({people,chat,gas,env=process.env,now=()=>new Date(
   };
   async function joined(space,person,expectedUser){
     const result = await read(space+'/members/'+person.email);
+    // Google returns HTTP 200 with NOT_A_MEMBER for email aliases absent from a DM.
+    check(result.state !== 'NOT_A_MEMBER','recipient_not_a_member');
     check(result.state === 'JOINED' && result.member?.type === 'HUMAN' && /^users\/\d+$/.test(result.member.name) &&
       (!expectedUser || result.member.name === expectedUser),'recipient_not_verified');
     return result.member.name;
@@ -93,7 +95,7 @@ function createWeeklyNotifier({people,chat,gas,env=process.env,now=()=>new Date(
         let failed = false;
         for(const space of spaces){
           try{ matches.push({space,user:await joined(space,person)}); }
-          catch(error){ if(![403,404].includes(statusCode(error))) failed = true; }
+          catch(error){ if(error.safeCode !== 'recipient_not_a_member' && ![403,404].includes(statusCode(error))) failed = true; }
         }
         result.push({kind:'personal',manager:person.name,person,
           ...(matches.length === 1 && !failed ? {...matches[0],status:'ready'} :
