@@ -15,6 +15,7 @@
  * [2026-09-29j] LLM이 대화 맥락으로 조회·변경 도구를 선택. 체크리스트 담당 정/부 조회와 조회 조건 기억.
  * [2026-09-30a] 환경변수의 승인 팀원 확인, 현장 일정 전용 권한과 대화방별 기억 분리.
  * [2026-10-01a] 팀원 권한 운영 반영. 소유자 개인챗의 기존 공정 변경 기록을 유지.
+ * [2026-10-01b] 팀방은 주간 일정 공지만 발송. 대화·앱 추가 인사·진행 표시는 개인챗에서만 처리.
  *
  * [2026-08 정리] 사용되지 않던 현장 필드 quote/saleMonth/orderCode/endDate 제거.
  *   - 감리시트(본진)에 해당 칸이 없어서 파서가 뽑아도 버려지던 값들.
@@ -38,7 +39,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const GAS_URL   = process.env.GAS_URL;
 const GAS_TOKEN = process.env.GAS_TOKEN;
-const BOT_VERSION = '2026-10-01a';
+const BOT_VERSION = '2026-10-01b';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.5-flash' });
 
@@ -162,6 +163,14 @@ function googleChatConversationKey(ev){
   const identity = googleChatEventIdentity(ev);
   return identity ? `${identity.spaceName}|${identity.userName}` : null;
 }
+function googleChatAllowsInteractiveReplies(ev){
+  // Shared spaces receive scheduled announcements only. Acknowledge all their
+  // events silently, including app installation, mentions and unsupported events.
+  if([ev?.space?.name,ev?.message?.space?.name].includes(TEAM_CHAT_SPACE)) return false;
+  const types = [ev?.space?.spaceType,ev?.space?.type,ev?.message?.space?.spaceType,ev?.message?.space?.type]
+    .filter(value=>value != null);
+  return types.length > 0 && types.every(type=>type === 'DIRECT_MESSAGE' || type === 'DM');
+}
 function recognizedAssistantProfile(profile){
   return profile?.verified === true && ASSISTANT_PEOPLE.find(person=>person.email === profile.email && person.name === profile.name && person.owner === profile.owner);
 }
@@ -229,6 +238,7 @@ app.post('/gchat', async (req,res)=>{
   // Authentication is mandatory even when progress messages are disabled.
   if(!await verifyGoogleChatRequest(req)) return res.status(401).json({error:'unauthorized'});
   if(ev.type === 'REMOVED_FROM_SPACE') return res.json({});
+  if(!googleChatAllowsInteractiveReplies(ev)) return res.json({});
   const profile = await resolveGoogleChatActor(ev);
   if(!profile) return res.status(403).json({text:'사용 권한을 확인하지 못했어요. 등록된 회사 계정으로 다시 요청해 주세요.'});
   const receipt = {pending:pendingAtReceipt,profile,web:true};
