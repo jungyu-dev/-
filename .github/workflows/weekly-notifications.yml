@@ -2,9 +2,19 @@ name: Weekly field visits
 
 on:
   schedule:
-    # Sunday 23:00 UTC = Monday 08:00 Asia/Seoul. Later ticks recover delayed/failed delivery.
-    - cron: '0,15,30,45 23 * * 0'
+    # Keep Monday 08:00 Asia/Seoul, with off-hour retries until the noon cutoff.
+    - cron: '0 23 * * 0'
+    - cron: '7,22,37,52 23 * * 0'
+    - cron: '7,22,37,52 0-2 * * 1'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Read status, or run notifications within the Monday delivery window'
+        type: choice
+        options:
+          - status
+          - run
+        default: status
 
 permissions: {}
 
@@ -14,7 +24,7 @@ concurrency:
 
 jobs:
   notify:
-    if: vars.GCHAT_WEEKLY_ENABLED == 'true'
+    if: vars.GCHAT_WEEKLY_ENABLED == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'status')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,6 +32,7 @@ jobs:
         env:
           WEEKLY_ENDPOINT: ${{ vars.GCHAT_WEEKLY_ENDPOINT }}
           WEEKLY_JOB_TOKEN: ${{ secrets.GCHAT_WEEKLY_JOB_TOKEN }}
+          WEEKLY_MODE: ${{ inputs.mode }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -30,19 +41,45 @@ jobs:
           token = os.environ.get('WEEKLY_JOB_TOKEN', '')
           if endpoint != 'https://kakaobiseo.onrender.com/internal/weekly-notifications/run' or not re.fullmatch(r'[a-f0-9]{64}', token):
               sys.exit('Weekly job configuration is missing or invalid')
+          event_name = os.environ.get('GITHUB_EVENT_NAME', '')
+          if event_name not in ('schedule', 'workflow_dispatch'):
+              sys.exit('Unsupported weekly job event')
+          mode = 'run' if event_name == 'schedule' else os.environ.get('WEEKLY_MODE', '') or 'status'
+          if mode not in ('status', 'run'):
+              sys.exit('Invalid weekly job mode')
+          if mode == 'status':
+              endpoint = endpoint.removesuffix('/run') + '/status'
           # Avoid sending the secret through a redirect, and never print request headers or bodies.
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
                   return None
           opener = urllib.request.build_opener(NoRedirect)
           for attempt in range(3):
-              request = urllib.request.Request(endpoint, data=b'{}', method='POST', headers={
+              request = urllib.request.Request(endpoint, data=None if mode == 'status' else b'{}', method='GET' if mode == 'status' else 'POST', headers={
                   'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
               try:
                   with opener.open(request, timeout=150) as response:
                       result = json.load(response)
+                  if mode == 'status':
+                      if not isinstance(result, dict) or type(result.get('enabled')) is not bool:
+                          raise ValueError('unexpected status response')
+                      summary = {'enabled': result['enabled']}
+                      for field in ('timeZone', 'cron', 'revision'):
+                          value = result.get(field)
+                          if isinstance(value, str) and len(value) <= 128 and not any(ord(char) < 32 for char in value):
+                              summary[field] = value
+                      window = result.get('deliveryWindow')
+                      if isinstance(window, dict):
+                          summary['deliveryWindow'] = {field: window[field] for field in ('weekday', 'startHour', 'endHourExclusive')
+                              if type(window.get(field)) is int and 0 <= window[field] <= 24}
+                      print('Weekly status: ' + json.dumps(summary, ensure_ascii=False))
+                      break
                   status = result.get('status')
-                  if status not in ('complete', 'disabled', 'outside_window'):
+                  if status == 'disabled':
+                      sys.exit('Weekly job is disabled; verify server and scheduled-job settings')
+                  if status == 'outside_window' and event_name != 'workflow_dispatch':
+                      sys.exit('Weekly job: 발송 시간창 만료, 실제 전송 기록 확인 필요')
+                  if status not in ('complete', 'outside_window'):
                       raise ValueError('unexpected status')
                   print('Weekly job: ' + status)
                   break

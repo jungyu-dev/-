@@ -253,7 +253,8 @@ function installWeeklyRoutes(app,options){
   });
   app.get('/internal/weekly-notifications/status',(req,res)=>{
     if(!authorized(req,env)) return res.status(401).json({error:'unauthorized'});
-    return res.json({enabled:env.GCHAT_WEEKLY_ENABLED === 'true',timeZone:env.GCHAT_WEEKLY_TIMEZONE,cron:env.GCHAT_WEEKLY_CRON});
+    return res.json({enabled:env.GCHAT_WEEKLY_ENABLED === 'true',timeZone:env.GCHAT_WEEKLY_TIMEZONE,cron:env.GCHAT_WEEKLY_CRON,
+      revision:'2026-10-12a',deliveryWindow:{weekday:1,startHour:8,endHourExclusive:12}});
   });
   return notifier;
 }

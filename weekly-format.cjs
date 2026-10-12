@@ -36,7 +36,8 @@ function weekRange(now = new Date()){
 
 function weeklySlot(now = new Date()){
   const local = seoulParts(now);
-  if(civilDate(local.date).getUTCDay() !== 1 || local.hour !== 8) return null;
+  // Allow delayed external-clock runs to recover the same weekly report until noon.
+  if(civilDate(local.date).getUTCDay() !== 1 || local.hour < 8 || local.hour >= 12) return null;
   return weekRange(now);
 }
 
